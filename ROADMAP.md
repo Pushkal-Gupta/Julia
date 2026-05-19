@@ -1,185 +1,196 @@
-# ImageLab — Roadmap
+# What I'm building
 
-A living plan. Each milestone is a self-contained deliverable: working code,
-tests, one example script that writes artifacts to `artifacts/<milestone>/`,
-and a short note in this file when it lands.
+This is the rough plan I keep nearby while I work. It's a living file —
+when something lands I update the section, and when I learn something
+worth recording mid-build I jot it down here. Nothing is on a schedule.
 
-Philosophy: build the simplest correct version → make it testable → make it
-visual → make it reusable → make it fast → compare to ecosystem. Don't
-generalize until the third use case appears.
+## Where I'm at
 
----
+The convolution engine and the 1D / separable layer are done. So are
+the first- and second-order edge operators. I'm starting on Canny next.
 
-## Milestone 1 — Foundation (✓ done)
+Roughly:
 
-**Goal:** prove the package layout works, get a correct naive 2D convolution
-running end-to-end, and produce the first visual artifacts.
+- Convolution engine — done
+- Convolution depth (1D, separable, factor_separable) — done
+- Edge operators (first- and second-order) — done
+- Canny pipeline from scratch — next
+- Noise + preprocessing experiments — after Canny
+- Performance lab (benchmarks, FFT crossover, `@code_warntype`) — folded
+  in as needed; a real pass once Canny is solid
+- Features (Harris, Hough, connected components, template matching) —
+  later
+- Interactive playground (Pluto or a small Makie app) — later
+- Stretch: linear-algebra view of convolution, image diffusion, a tiny
+  ray tracer, differentiable filters
 
-Shipped:
+## The convolution engine
 
-- `Project.toml`, package skeleton at `src/ImageLab.jl` with four submodules:
-  `Synth`, `Kernels`, `Padding`, `Convolution`, `IO`.
-- Synthetic image generators: checkerboard, square, circle, impulse, ramp,
-  lines, Gaussian and salt-and-pepper noise.
-- A small kernel zoo: box, Gaussian, Sobel/Prewitt/Scharr/Roberts (x and y),
-  Laplacian (4- and 8-connected), Laplacian of Gaussian, unsharp-style
-  sharpen, identity.
-- Padding module with `:zero`, `:replicate`, `:reflect`, `:symmetric`,
-  `:circular`, `:valid`.
-- Naive but correct `correlate2d` / `convolve2d` (+ in-place variants).
-- Pure-Julia Netpbm (PGM/PPM) writer + reader — no external deps.
-- Unit tests for every module (`julia --project=. test/runtests.jl`).
-- `examples/01_first_convolutions.jl` writes 8 PGMs comparing blur, gradient,
-  Laplacian, and sharpen on a synthetic image.
+What I have:
 
-**What this teaches:** module structure, multiple dispatch on `AbstractMatrix`,
-type promotion, padding as a separate concern from the inner loop, and why
-"correlation" and "convolution" deserve separate functions.
+- A package at `src/ImageLab.jl` with submodules for synthetic images,
+  kernels, padding, convolution, visualization, and Netpbm I/O.
+- Naive `correlate2d` / `convolve2d` with in-place variants.
+- All six padding modes (`:zero`, `:replicate`, `:reflect`, `:symmetric`,
+  `:circular`, `:valid`) for both 2D arrays and 1D vectors.
+- A kernel zoo: box, Gaussian, Sobel, Prewitt, Scharr, Roberts (2D
+  and separable forms), Laplacian (4- and 8-connected), LoG, sharpen.
+- Synthetic image generators: checkerboard, square, circle, impulse,
+  ramp, lines, Gaussian and salt-and-pepper noise.
+- A pure-Julia PGM/PPM reader and writer — no external dependencies.
 
----
+This was the boring-but-important work. Most of the lessons came from
+getting padding right — the "interior is copied, exterior is filled per
+mode" pattern is a clean separation that lets the convolution inner
+loop stay trivial.
 
-## Milestone 2 — Convolution depth lab (✓ done)
+## Convolution depth
 
-**Goal:** turn the naive engine into a proper teaching reference, and start
-building the comparison story that runs through the whole repo.
+What I added on top of the engine:
 
-Shipped:
+- `correlate1d` / `convolve1d` for both vectors and matrices, with an
+  `axis = :horizontal | :vertical` keyword on the matrix variant.
+- `separable_correlate2d` that composes two 1D passes.
+- Pre-factored 1D kernels: `gaussian1d`, `box1d`, plus
+  `sobel_*_separable`, `prewitt_*_separable`, `scharr_*_separable`.
+- `factor_separable(K)` that uses SVD to detect rank-1 kernels and
+  return their factors. Useful when I don't already know whether a
+  kernel separates.
+- A small `Viz` submodule for normalization and montage tiling.
 
-- 1D `correlate1d` / `convolve1d` for both vectors and matrices (with
-  `axis=:horizontal/:x` or `:vertical/:y`).
-- `Padding.pad_vector` for the 1D case under all six border modes.
-- **Separable convolution**: `separable_correlate2d` / `separable_convolve2d`
-  (two-pass implementation) plus pre-factored canonical 1D kernels
-  (`gaussian1d`, `box1d`, `sobel_*_separable`, `prewitt_*_separable`,
-  `scharr_*_separable`).
-- **`factor_separable(K)`**: SVD-based rank-1 detection for arbitrary
-  kernels. Recovers factors that reproduce the naive 2D result to ~1e-10.
-- New `Viz` submodule with `normalize01`, `signed_to_gray`, and `montage`
-  for one-glance comparison grids.
-- **`examples/02_padding_modes_studio.jl`**: 96×96 image blurred with a
-  σ=3 Gaussian under all five non-`:valid` modes, packed into a 2×3
-  montage PGM.
-- **`examples/03_separable_vs_naive.jl`**: timing table across kernel
-  sizes 3..21. Measured speedup at k=21 is **10.8×** (theory says
-  k/2 = 10.5×). Max numerical drift between naive and separable: ~1e-15.
-- Concept docs: `docs/concepts/02-separable-convolution.md`,
-  `docs/concepts/03-padding-modes.md`.
-- 117 passing tests (was 74).
+The lesson I keep coming back to: separable convolution is a clean
+applied-linear-algebra moment — a 2D kernel is "really" a 1D kernel
+twice if and only if its SVD has one nonzero singular value. The
+benchmark in `examples/03_separable_vs_naive.jl` shows the theoretical
+`k/2` speedup ratio almost exactly at `k=21` (10.8× measured, 10.5×
+predicted).
 
-**Deferred to a later milestone:**
+## Edge detection
 
-- **Stride and dilation** parameters — not yet needed for the edge-detection
-  arc; will land alongside the feature-detection layer when we want to
-  build image pyramids cheaply.
-- **Kernel-walking visualization** (numbered PGMs for an animation) — fun
-  but lower leverage than the Canny pipeline; revisit when M8 (interactive
-  playground) starts.
+What I built:
 
----
+- First-order operators: `gradient(img, op)` dispatches on `:sobel`,
+  `:prewitt`, `:scharr`, `:roberts`. The first three go through the
+  separable engine; Roberts is a hand-written 2×2 inner loop because
+  forcing a 2×2 through the odd-only 2D engine would be ugly.
+- `gradient_magnitude(gx, gy)` (Euclidean) and `gradient_direction`
+  (`atan(gy, gx)` in `(-π, π]`).
+- `quantize_direction(θ)` maps angles to 4 sectors (horizontal,
+  NE-diag, vertical, NW-diag) for use in non-maximum suppression.
+- Second-order: `log_filter` and `dog_filter`. Verified empirically
+  that DoG with `σ₂/σ₁ ≈ 1.6` looks visually almost identical to LoG
+  at `σ ≈ σ₁` — that's the Marr approximation, and it's much cheaper
+  because both Gaussians are separable.
+- `zero_crossings(img; min_diff)` for second-derivative edges.
+- Threshold helpers: `threshold_mask` (absolute) and
+  `percentile_threshold` (robust to brightness changes).
 
-## Milestone 3 — Edge detection lab v1
+Two studios produce visual artifacts:
 
-**Goal:** every classical edge operator, from scratch, with a comparison
-studio.
+- `examples/04_edge_operator_studio.jl` — first-order operators side
+  by side on a single synthetic input. 3×3 montage with input, Sobel
+  `gx` / `gy`, magnitudes for all four operators, masked direction
+  map, and a thresholded edge mask.
+- `examples/05_log_dog_zero_crossings.jl` — second-order operators
+  with a σ sweep, DoG at two ratios, zero-crossings for both LoG and
+  DoG, plus a `LoG − DoG` difference tile that shows how close the
+  two operators are at the classical 1:1.6 ratio.
 
-Planned:
+Concept notes:
 
-- Gradient magnitude + direction with proper handling of `atan2`.
-- Roberts / Prewitt / Sobel / Scharr side-by-side on the same input.
-- Laplacian-of-Gaussian and Difference-of-Gaussians, with σ sweeps.
-- Zero-crossing detector for second-derivative methods.
-- Threshold-based and percentile-based edge maps.
-- Comparison studio script: one input → grid of every operator at the same
-  scale.
-- Per-operator concept docs explaining what it sees and what fools it.
+- `docs/concepts/04-gradient-magnitude-and-direction.md` —
+  comparing the four first-order operators, how to visualize
+  direction on grayscale.
+- `docs/concepts/05-second-order-edges.md` — Laplacian → LoG → DoG →
+  zero-crossings, and why the field eventually moved on from
+  second-order methods toward Canny.
 
----
+## Canny from scratch
 
-## Milestone 4 — Canny from scratch
-
-**Goal:** a textbook-faithful Canny pipeline, with every intermediate saved.
-
-Planned stages:
+The textbook pipeline, with every intermediate saved as a PGM:
 
 1. Gaussian blur (parameterized σ).
-2. Sobel gradient magnitude + direction.
-3. Non-maximum suppression (proper interpolation across the gradient angle).
-4. Double threshold with hysteresis (8-connectivity).
+2. Sobel gradient magnitude + direction (quantized to 4 bins).
+3. Non-maximum suppression along the gradient direction.
+4. Double threshold + 8-connected hysteresis.
 
-Each stage saves an intermediate PGM. A single `examples/canny_studio.jl`
-sweeps `(σ, low_threshold, high_threshold)` to teach parameter sensitivity.
+A single `canny_studio.jl` that sweeps `(σ, low, high)` and saves a
+grid of outputs so I can see how each parameter affects the final edge
+map. This is the centerpiece of the edge-detection arc.
 
----
+## Noise + preprocessing
 
-## Milestone 5 — Performance lab
+Once Canny is solid, I want to ask: how much does the denoiser matter?
 
-**Goal:** measure everything we've built so we know where to spend effort
-later. Establish discipline around `BenchmarkTools` and `@code_warntype`.
+- Box vs Gaussian vs median vs bilateral.
+- Salt-and-pepper noise vs Gaussian noise inputs.
+- Same Canny parameters, sweep the denoiser, compare against the
+  noise-free ground-truth edge map.
 
-Planned:
+The synthetic image generators already produce ground-truth edge
+locations, so I can score this quantitatively (precision/recall on
+edge pixels at a fixed dilation tolerance).
 
-- Add `BenchmarkTools` as a dev dependency.
-- Compare:
-  1. Naive nested loop (M1).
-  2. Inline bounds-aware loop that skips the padding copy.
-  3. Separable two-pass loop.
-  4. FFT-based convolution (`FFTW`) for large kernels.
-- Sweep kernel sizes from 3×3 to 31×31 on a 1024×1024 image; plot crossover
-  curves.
-- `@code_warntype` audit on hot paths; document any type instabilities found
-  and how they were fixed.
-- A `benchmarks/` directory with reproducible scripts and recorded outputs.
+## Performance lab
 
----
+The performance question I want to answer cleanly: where does FFT-based
+convolution beat the naive nested loop, and where does the separable
+two-pass approach beat both?
 
-## Milestone 6 — Noise & preprocessing
+- Naive 2D loop (already have).
+- Inline bounds-aware loop that skips the padding copy.
+- Separable two-pass (already have).
+- FFT-based convolution using `FFTW`. This is the one new dependency
+  I'd justify here.
 
-- Box / Gaussian / median / bilateral exploration.
-- Salt-and-pepper + Gaussian noise generators (already in `Synth`).
-- Systematic experiment: fix the edge operator, vary the denoiser, score
-  results against the ground-truth edge map of a synthetic image.
+For each: kernel size sweep on a 1024×1024 image, log-log plot of
+ms-per-megapixel, identify the crossover points. A real benchmark
+suite using `BenchmarkTools` (not `@elapsed`).
 
----
+While I'm at it I want to do a `@code_warntype` audit on the hot paths
+and document anything I find. Type instability is the easiest Julia
+performance bug to introduce by accident.
 
-## Milestone 7 — Feature lab
+## Features
 
-- Harris corner detector.
+This gets us into proper computer vision territory:
+
+- Harris corner detector — a Sobel-flavored window response built on
+  what I already have.
 - Hough transform for lines.
-- Connected component labeling.
+- Connected component labeling on the Canny output.
 - Template matching via normalized cross-correlation.
-- Image pyramids and scale-space basics.
+- Image pyramids and a small scale-space exploration.
 
----
+These don't need to be industrial-strength; they need to be teachable
+and produce visible outputs.
 
-## Milestone 8 — Interactive playground
+## Interactive playground
 
-Decision point at the time: Pluto notebook, GLMakie app, or a small Tk-style
-widget. The user has Julia 1.11; Pluto is the path of least friction. Build
-an "edge playground" where filter, σ, kernel size, and thresholds are live
-sliders.
+Pluto notebook with sliders for σ, kernel size, thresholds, denoiser
+choice, operator choice — one knob per question I keep asking the
+static example scripts. Pluto is the path of least friction on Julia
+1.11; if I find it slow I'll try a Makie window instead.
 
----
+## Stretch
 
-## Branching: MIT-style adjacencies
+Once the image core is mature, things I'd want to explore:
 
-Once the image core is solid, optional spurs in the MIT Computational
-Thinking spirit:
+- The linear-algebra view: convolution as a doubly block circulant
+  matrix; the DFT diagonalizes it; that's where FFT-based convolution
+  comes from. A short notebook.
+- Anisotropic diffusion (Perona–Malik) — convolution-like but
+  non-linear. Beautiful smoothing.
+- A tiny ray tracer to get me out of imaging and into rendering. The
+  MIT course goes here.
+- Differentiable filters with `Zygote` or `ForwardDiff` — preview of
+  where classical CV meets autodiff.
+- GPU acceleration of the naive kernel via `KernelAbstractions.jl`
+  once the performance lab tells me it'd pay off.
 
-- **Linear-algebra view of convolution:** Toeplitz / circulant matrices,
-  doubly-block-circulant for 2D. A short notebook.
-- **Diffusion as convolution:** anisotropic diffusion, Perona-Malik.
-- **A tiny ray tracer** to broaden Julia intuition outside imaging.
-- **Differentiable filters:** auto-diff on a single Sobel filter via
-  `Zygote` or `ForwardDiff` — preview of where deep learning meets classical
-  vision.
-- **GPU acceleration** for the naive kernel via `KernelAbstractions.jl`
-  once the performance lab tells us it's worth it.
+## References
 
----
-
-## References (canonical)
-
-- MIT 18.S191 / Computational Thinking (Fall 2020) — <https://computationalthinking.mit.edu/Fall20/>
+- MIT Computational Thinking (Fall 2020) — <https://computationalthinking.mit.edu/Fall20/>
 - MIT 18.S191 course materials — <https://github.com/mitmath/18S191>
-- MIT Computational Thinking repo family — <https://github.com/mitmath/computational-thinking>
+- MIT Computational Thinking repos — <https://github.com/mitmath/computational-thinking>
 - JuliaImages docs — <https://github.com/JuliaImages/juliaimages.github.io>

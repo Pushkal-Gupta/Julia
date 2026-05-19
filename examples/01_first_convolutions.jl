@@ -1,18 +1,22 @@
 #!/usr/bin/env julia
 # 01_first_convolutions.jl
 #
-# Milestone 1 deliverable. Builds a small synthetic test image, runs four
-# canonical operators over it, and writes one PGM per stage into
-# ./artifacts/01_first_convolutions/. Open them in Preview to inspect.
+# First proper sanity check for the convolution engine. I build a
+# synthetic image (checkerboard with a bright disk on top), run a handful
+# of canonical filters over it, and dump one PGM per stage into
+# ./artifacts/01_first_convolutions/. Open them in Preview to look.
 #
 #   julia --project=. examples/01_first_convolutions.jl
 #
-# What to look for in the outputs:
-#   - blur:        edges should be softened; the checker grid loses sharpness.
-#   - sobel_x:     vertical edges (sides of the square) light up; horizontal
-#                  edges are invisible.
-#   - sobel_y:     opposite — horizontal edges light up.
-#   - grad_mag:    all edges visible regardless of orientation.
+# What I expect to see:
+#   blur:       edges soften; the checker grid loses contrast.
+#   sobel_x:    vertical edges (sides of the disk + checker columns) light
+#               up. Horizontal lines are invisible to it.
+#   sobel_y:    opposite — horizontal lines light up.
+#   grad_mag:   all edges visible regardless of orientation. This is the
+#               "everywhere there's a change" image.
+#   laplacian:  zero-crossings sit on the edges; signed output.
+#   sharpened:  edges over-emphasised; haloing if I push strength too far.
 
 using ImageLab
 using ImageLab.Synth, ImageLab.Kernels, ImageLab.Convolution, ImageLab.PNM

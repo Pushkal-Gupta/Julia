@@ -1,22 +1,24 @@
 #!/usr/bin/env julia
 # 02_padding_modes_studio.jl
 #
-# Milestone 2 visual deliverable. Apply the same large Gaussian blur to the
-# same image under each padding mode, and assemble a 2×3 comparison montage
-# so the differences are obvious at a glance.
+# I wanted one image that makes the difference between padding modes
+# obvious. So: build an off-center bright object, blur it with a large
+# Gaussian (σ=3, kernel reaches ~9 pixels into the border), then run that
+# under each of the five non-`:valid` modes. Tile them into a 2×3 montage.
 #
 #   julia --project=. examples/02_padding_modes_studio.jl
 #
-# What to look for:
-#   :zero        → bright objects bleed into a dark halo at the border because
-#                   the world "outside the frame" is taken to be black.
-#   :replicate   → the edge color extends outward; objects near the border keep
-#                   their brightness without the halo.
-#   :reflect     → near-perfect at smooth interiors; can introduce a fake edge
-#                   when the actual border has a strong gradient.
-#   :symmetric   → like :reflect but the border pixel is duplicated.
-#   :circular    → opposite edges fuse, so a bright top-right corner can leak
-#                   onto the bottom-left. The implicit FFT-convolution mode.
+# What each mode looks like once it's blurred:
+#   :zero        bright objects fade into a dark halo at the border because
+#                the world "outside the frame" is taken to be black.
+#   :replicate   the edge color extends outward, so the halo doesn't form.
+#   :reflect     near-invisible at smooth interiors. Can introduce a fake
+#                edge when the actual border had a strong gradient.
+#   :symmetric   almost identical to :reflect — the border pixel is included
+#                in the mirror.
+#   :circular    opposite edges fuse, so a bright top-right block can leak
+#                onto the bottom-left. This is what FFT-based convolution
+#                does implicitly.
 
 using ImageLab
 using ImageLab.Synth, ImageLab.Kernels, ImageLab.Convolution, ImageLab.Viz, ImageLab.PNM

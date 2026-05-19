@@ -1,21 +1,20 @@
 #!/usr/bin/env julia
 # 03_separable_vs_naive.jl
 #
-# Compare naive 2D Gaussian convolution against the separable two-pass version
-# across kernel sizes. Print a timing table; save it as a text file alongside
-# a visual sanity check (the two outputs should be pixel-identical up to
-# float rounding).
+# Quick timing check: naive 2D Gaussian vs the separable two-pass version
+# across kernel sizes. Theory says the speedup should be ~k/2 since naive
+# does k² mults per pixel and separable does 2k. I want to see that on
+# real numbers, and check that the two outputs agree to float precision.
 #
 #   julia --project=. examples/03_separable_vs_naive.jl
 #
-# What to look for:
-#   - Outputs are numerically equal (max abs diff ~ 1e-13 or smaller).
-#   - Speedup grows roughly linearly with k for large enough k — the
-#     theoretical ratio is k/2 since naive does k² mults/pixel and separable
-#     does 2k. Below k≈5 the overhead of the second padding pass dominates.
+# What I expect:
+#   - Outputs numerically equal (max abs diff ~1e-15, pure rounding noise).
+#   - Speedup ~1× at k=3 (padding overhead dominates), growing toward
+#     k/2 as the kernel gets larger.
 #
-# We use `@elapsed` here, not BenchmarkTools, so this script stays
-# dependency-free. The real benchmark suite lands in Milestone 5.
+# I'm using `@elapsed` here rather than BenchmarkTools so the script stays
+# dependency-free. A proper benchmark suite comes later.
 
 using Printf
 using ImageLab

@@ -1,9 +1,9 @@
 """
     Viz
 
-Small visualization helpers. Nothing fancy — just the operations every
-example script kept reinventing inline. As we add interactive tools and
-heatmaps in later milestones, those go here too.
+Small visualization helpers. Nothing fancy — just the operations the
+example scripts kept reinventing inline. Interactive tools and heatmaps
+will land here later.
 """
 module Viz
 
