@@ -1,0 +1,21 @@
+# Julia
+Manifest.toml
+*.cov
+*.jl.cov
+*.jl.mem
+.julia/
+deps/build.log
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Generated artifacts
+artifacts/*
+!artifacts/.gitkeep
+!artifacts/curated/
+
+# Pluto notebook caches
+*.pluto_state
