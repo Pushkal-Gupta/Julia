@@ -6,16 +6,17 @@ worth recording mid-build I jot it down here. Nothing is on a schedule.
 
 ## Where I'm at
 
-The convolution engine and the 1D / separable layer are done. So are
-the first- and second-order edge operators. I'm starting on Canny next.
+The convolution engine, the 1D / separable layer, all the edge
+operators, and the full Canny pipeline are done. I'm starting on the
+noise / preprocessing experiments next.
 
 Roughly:
 
 - Convolution engine — done
 - Convolution depth (1D, separable, factor_separable) — done
 - Edge operators (first- and second-order) — done
-- Canny pipeline from scratch — next
-- Noise + preprocessing experiments — after Canny
+- Canny pipeline from scratch — done
+- Noise + preprocessing experiments — next
 - Performance lab (benchmarks, FFT crossover, `@code_warntype`) — folded
   in as needed; a real pass once Canny is solid
 - Features (Harris, Hough, connected components, template matching) —
@@ -107,16 +108,35 @@ Concept notes:
 
 ## Canny from scratch
 
-The textbook pipeline, with every intermediate saved as a PGM:
+What I built:
 
-1. Gaussian blur (parameterized σ).
-2. Sobel gradient magnitude + direction (quantized to 4 bins).
-3. Non-maximum suppression along the gradient direction.
-4. Double threshold + 8-connected hysteresis.
+- `nonmaximum_suppression(mag, θ)` — thins fat ridges into one-pixel
+  edges by suppressing any pixel that isn't a strict local maximum
+  along the gradient direction. Uses the 4-sector `quantize_direction`
+  for neighbor lookup.
+- `double_threshold(mag; low, high, relative=true)` — partitions
+  pixels into strong / weak / dropped. Thresholds default to relative
+  fractions of `maximum(mag)` so they survive brightness changes.
+- `hysteresis(strong, weak)` — stack-based DFS that recruits any
+  weak pixel 8-connected to a strong pixel (transitively). O(H·W).
+- `canny_stages(img; sigma, low, high, pad)` — runs all four stages
+  and returns a `CannyStages` struct with every intermediate.
+- `canny(img; ...)` — convenience wrapper that returns just the final
+  `BitMatrix` edge map.
 
-A single `canny_studio.jl` that sweeps `(σ, low, high)` and saves a
-grid of outputs so I can see how each parameter affects the final edge
-map. This is the centerpiece of the edge-detection arc.
+Two studios:
+
+- `examples/06_canny_pipeline.jl` — every intermediate on a single
+  input, tiled into a 3×3 montage so I can read the pipeline flow
+  top-left to bottom-right.
+- `examples/07_canny_parameter_sweep.jl` — same input, nine different
+  parameter settings (3 σ × 3 threshold pairs). The interesting
+  observation: at large σ the thresholds barely matter, because by
+  the time the noise is gone every NMS-surviving pixel is a "real"
+  edge with a high magnitude. At small σ the thresholds do all the
+  work.
+
+Concept note: `docs/concepts/06-canny.md`.
 
 ## Noise + preprocessing
 

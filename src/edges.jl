@@ -30,7 +30,9 @@ export gradient, gradient_magnitude, gradient_direction,
        quantize_direction,
        log_filter, dog_filter,
        zero_crossings,
-       threshold_mask, percentile_threshold
+       threshold_mask, percentile_threshold,
+       nonmaximum_suppression, double_threshold, hysteresis,
+       canny, canny_stages, CannyStages
 
 const OPERATORS = (:sobel, :prewitt, :scharr, :roberts)
 
@@ -238,5 +240,174 @@ function percentile_threshold(img::AbstractMatrix{<:Real}, pct::Real)
     k = clamp(round(Int, pct * n), 1, n)
     return Float64(partialsort(vec(img), k))
 end
+
+# ── Canny pipeline ────────────────────────────────────────────────────────────
+# The four stages: smooth → gradient → NMS → hysteresis. Each lives as its
+# own function so I can inspect intermediates and re-use them outside the
+# Canny context.
+
+"""
+    nonmaximum_suppression(mag, θ) -> Matrix{Float64}
+
+Thin a gradient magnitude image so only local maxima *along the gradient
+direction* survive. A pixel keeps its magnitude only if it's at least as
+large as its two neighbors in the direction of `θ`; otherwise it's zeroed.
+
+This is what turns the fat band of high-gradient pixels on either side
+of an edge into a one-pixel-wide ridge sitting on the edge itself.
+"""
+function nonmaximum_suppression(mag::AbstractMatrix{<:Real}, θ::AbstractMatrix{<:Real})
+    size(mag) == size(θ) || throw(DimensionMismatch(
+        "magnitude and direction must share size; got $(size(mag)) and $(size(θ))"))
+    H, W = size(mag)
+    out = zeros(Float64, H, W)
+    @inbounds for j in 2:W - 1, i in 2:H - 1
+        m = mag[i, j]
+        m == 0 && continue
+        sector = quantize_direction(θ[i, j])
+        # Pick the two neighbors lying along the gradient direction.
+        # The edge itself runs perpendicular to this.
+        if sector == 0          # gradient horizontal → look left / right
+            n1 = mag[i, j - 1]; n2 = mag[i, j + 1]
+        elseif sector == 1      # gradient NE diagonal
+            n1 = mag[i - 1, j + 1]; n2 = mag[i + 1, j - 1]
+        elseif sector == 2      # gradient vertical → look up / down
+            n1 = mag[i - 1, j]; n2 = mag[i + 1, j]
+        else                    # gradient NW diagonal
+            n1 = mag[i - 1, j - 1]; n2 = mag[i + 1, j + 1]
+        end
+        if m ≥ n1 && m ≥ n2
+            out[i, j] = m
+        end
+    end
+    return out
+end
+
+"""
+    double_threshold(mag; low=0.05, high=0.15, relative=true) -> (strong, weak)
+
+Partition a magnitude image into three sets: strong edges (`mag ≥ high`),
+weak edges (`low ≤ mag < high`), and the rest (suppressed).
+
+When `relative=true` (the default), `low` and `high` are fractions of
+`maximum(mag)` — so `low=0.05` means "5% of the brightest gradient in
+this image". Robust to changes in absolute brightness. When `false`,
+they're absolute values on the same scale as `mag`.
+"""
+function double_threshold(mag::AbstractMatrix{<:Real};
+                          low::Real = 0.05, high::Real = 0.15,
+                          relative::Bool = true)
+    low ≤ high || throw(ArgumentError(
+        "low ($low) must be ≤ high ($high)"))
+    if relative
+        mmax = maximum(mag)
+        mmax == 0 && return (falses(size(mag)), falses(size(mag)))
+        lo, hi = low * mmax, high * mmax
+    else
+        lo, hi = low, high
+    end
+    strong = mag .≥ hi
+    weak = (mag .≥ lo) .& .!strong
+    return (strong, weak)
+end
+
+"""
+    hysteresis(strong, weak) -> BitMatrix
+
+Connect weak-edge pixels to strong ones via 8-connectivity. A weak pixel
+that touches a strong pixel — directly or through a chain of other weak
+pixels — becomes an edge. Everything else gets dropped.
+
+This is the step that fixes the "broken edge" problem: a long edge that
+dips below the high threshold in places still survives, as long as it
+stays above the low threshold and reconnects somewhere.
+"""
+function hysteresis(strong::BitMatrix, weak::BitMatrix)
+    size(strong) == size(weak) || throw(DimensionMismatch(
+        "strong and weak must share size"))
+    H, W = size(strong)
+    out = copy(strong)
+    # DFS from every strong pixel, recruiting weak neighbors.
+    stack = Tuple{Int, Int}[]
+    @inbounds for j in 1:W, i in 1:H
+        strong[i, j] && push!(stack, (i, j))
+    end
+    @inbounds while !isempty(stack)
+        i, j = pop!(stack)
+        for dj in -1:1, di in -1:1
+            (di == 0 && dj == 0) && continue
+            ni, nj = i + di, j + dj
+            (1 ≤ ni ≤ H && 1 ≤ nj ≤ W) || continue
+            if weak[ni, nj] && !out[ni, nj]
+                out[ni, nj] = true
+                push!(stack, (ni, nj))
+            end
+        end
+    end
+    return out
+end
+
+"""
+    CannyStages
+
+A bundle of every intermediate from a Canny run, so I can save / inspect
+each stage independently. Fields:
+
+- `blurred`   — image after the Gaussian pre-smooth
+- `gx`, `gy`  — Sobel gradient components on `blurred`
+- `magnitude` — `√(gx² + gy²)`
+- `direction` — `atan(gy, gx)`, in radians
+- `nms`       — magnitude after non-maximum suppression
+- `strong`    — `nms ≥ high` after double thresholding
+- `weak`      — `low ≤ nms < high`
+- `edges`     — final boolean edge map after hysteresis
+"""
+struct CannyStages
+    blurred::Matrix{Float64}
+    gx::Matrix{Float64}
+    gy::Matrix{Float64}
+    magnitude::Matrix{Float64}
+    direction::Matrix{Float64}
+    nms::Matrix{Float64}
+    strong::BitMatrix
+    weak::BitMatrix
+    edges::BitMatrix
+end
+
+"""
+    canny_stages(img; sigma=1.4, low=0.05, high=0.15, pad=:replicate) -> CannyStages
+
+Run the full Canny pipeline and return *every* intermediate. Useful for
+visualization scripts that need to show the cascade.
+
+The Gaussian kernel size auto-adjusts to `2·⌈3σ⌉ + 1` so it covers
+roughly ±3σ. The gradient stage uses Sobel (best balance of cost and
+rotational symmetry among 3×3 operators).
+"""
+function canny_stages(img::AbstractMatrix{<:Real};
+                      sigma::Real = 1.4,
+                      low::Real = 0.05,
+                      high::Real = 0.15,
+                      pad::Symbol = :replicate)
+    sigma > 0 || throw(ArgumentError("sigma must be positive, got $sigma"))
+    n = 2 * ceil(Int, 3 * sigma) + 1
+    g = gaussian1d(n; sigma = sigma)
+    blurred = separable_correlate2d(Float64.(img), g, g; pad = pad)
+    gx, gy = gradient(blurred, :sobel; pad = pad)
+    mag = gradient_magnitude(gx, gy)
+    θ = gradient_direction(gx, gy)
+    nms = nonmaximum_suppression(mag, θ)
+    strong, weak = double_threshold(nms; low = low, high = high)
+    edges = hysteresis(strong, weak)
+    return CannyStages(blurred, gx, gy, mag, θ, nms, strong, weak, edges)
+end
+
+"""
+    canny(img; sigma=1.4, low=0.05, high=0.15, pad=:replicate) -> BitMatrix
+
+Convenience wrapper around `canny_stages` that returns just the final
+edge map.
+"""
+canny(img::AbstractMatrix{<:Real}; kwargs...) = canny_stages(img; kwargs...).edges
 
 end # module Edges

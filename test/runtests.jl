@@ -9,5 +9,6 @@ using ImageLab
     include("test_separable.jl")
     include("test_viz.jl")
     include("test_edges.jl")
+    include("test_canny.jl")
     include("test_io.jl")
 end

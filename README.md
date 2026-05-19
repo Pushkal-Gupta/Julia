@@ -28,17 +28,19 @@ A small package at `src/ImageLab.jl` with these submodules:
   in-place versions, 1D operators, and `separable_correlate2d` which
   composes two 1D passes. There's also a `factor_separable(K)` that
   uses SVD to detect rank-1 kernels.
-- `Edges` — first- and second-order edge operators: `gradient` (Sobel /
-  Prewitt / Scharr / Roberts), `gradient_magnitude`, `gradient_direction`,
-  `quantize_direction` (4-way for NMS), `log_filter`, `dog_filter`,
-  `zero_crossings`, plus threshold helpers (`threshold_mask`,
-  `percentile_threshold`).
+- `Edges` — first- and second-order edge operators (`gradient` for
+  Sobel / Prewitt / Scharr / Roberts, `gradient_magnitude`,
+  `gradient_direction`, `quantize_direction`, `log_filter`, `dog_filter`,
+  `zero_crossings`, threshold helpers) plus the full Canny pipeline:
+  `nonmaximum_suppression`, `double_threshold`, `hysteresis`, and a
+  `canny` / `canny_stages` entry point that returns either the final
+  edge map or every intermediate.
 - `Viz` — `normalize01`, `signed_to_gray` (for signed gradient images),
   and a `montage` helper for assembling comparison grids.
 - `PNM` — pure-Julia Netpbm (PGM/PPM) reader and writer. No external
   deps; opens in Preview on macOS.
 
-Tests live in `test/` and currently pass 146. Run them with
+Tests live in `test/` and currently pass 169. Run them with
 `julia --project=. test/runtests.jl`.
 
 ## Quickstart
@@ -56,6 +58,8 @@ julia --project=. examples/02_padding_modes_studio.jl
 julia --project=. examples/03_separable_vs_naive.jl
 julia --project=. examples/04_edge_operator_studio.jl
 julia --project=. examples/05_log_dog_zero_crossings.jl
+julia --project=. examples/06_canny_pipeline.jl
+julia --project=. examples/07_canny_parameter_sweep.jl
 open artifacts/
 ```
 
@@ -100,7 +104,20 @@ Laplacian, LoG, DoG, and a zero-crossing detector. Two new studios
 (`04_edge_operator_studio.jl`, `05_log_dog_zero_crossings.jl`) tile the
 operators side by side on the same synthetic input.
 
-Canny from scratch is what I'm working on next.
+After that came the full Canny pipeline: Gaussian smoothing → Sobel
+gradient → non-maximum suppression along the gradient direction →
+double threshold → 8-connected hysteresis. The pipeline is split into
+named stages (`nonmaximum_suppression`, `double_threshold`,
+`hysteresis`) so I can inspect intermediates. `canny_stages` returns
+all eight intermediates in one struct; `canny` returns just the final
+edge map. `examples/06_canny_pipeline.jl` walks every stage on one
+input; `examples/07_canny_parameter_sweep.jl` runs a 3×3 grid over
+(σ, low, high) so I can see how each knob affects the output.
+
+Next I want to test the pipeline against denoising. Pick the same
+Canny parameters, vary the pre-smoothing strategy (box / Gaussian /
+median / bilateral), score against a ground-truth edge map I can
+synthesize.
 
 ## House rules
 
@@ -141,7 +158,9 @@ A few things I've decided up front so I don't drift:
 │   ├── 02_padding_modes_studio.jl
 │   ├── 03_separable_vs_naive.jl
 │   ├── 04_edge_operator_studio.jl
-│   └── 05_log_dog_zero_crossings.jl
+│   ├── 05_log_dog_zero_crossings.jl
+│   ├── 06_canny_pipeline.jl
+│   └── 07_canny_parameter_sweep.jl
 ├── docs/concepts/
 └── artifacts/      # generated PGMs, gitignored except .gitkeep
 ```
