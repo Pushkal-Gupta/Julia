@@ -49,4 +49,14 @@ using ImageLab.Padding
     @testset "unknown mode rejected" begin
         @test_throws ArgumentError pad_array(A, (1, 1, 1, 1); mode = :gibberish)
     end
+
+    @testset "pad_vector mirrors pad_array on 1D" begin
+        v = collect(1:5)
+        @test pad_vector(v, 2, 2; mode = :reflect) == [3, 2, 1, 2, 3, 4, 5, 4, 3]
+        @test pad_vector(v, 2, 2; mode = :symmetric) == [2, 1, 1, 2, 3, 4, 5, 5, 4]
+        @test pad_vector(v, 2, 2; mode = :circular) == [4, 5, 1, 2, 3, 4, 5, 1, 2]
+        @test pad_vector(v, 1, 1; mode = :replicate) == [1, 1, 2, 3, 4, 5, 5]
+        @test pad_vector(v, 1, 1; mode = :zero) == [0, 1, 2, 3, 4, 5, 0]
+        @test pad_vector(v, 5, 5; mode = :valid) == v
+    end
 end

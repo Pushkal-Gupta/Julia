@@ -11,7 +11,8 @@ Submodules so far:
 - [`Synth`](@ref ImageLab.Synth)        — synthetic image generators
 - [`Kernels`](@ref ImageLab.Kernels)    — canonical 2D kernels (box, Gaussian, Sobel, …)
 - [`Padding`](@ref ImageLab.Padding)    — border modes (`:zero`, `:replicate`, `:reflect`, `:circular`, `:valid`)
-- [`Convolution`](@ref ImageLab.Convolution) — naive 2D correlation and convolution
+- [`Convolution`](@ref ImageLab.Convolution) — 2D correlation, convolution, 1D + separable variants
+- [`Viz`](@ref ImageLab.Viz)            — normalization and montage helpers for comparison studios
 - [`PNM`](@ref ImageLab.PNM)            — Netpbm (PGM/PPM) readers and writers
 
 Convention: images are `Matrix{<:Real}` with values in `[0, 1]` for floats or
@@ -25,14 +26,16 @@ include("synth.jl")
 include("kernels.jl")
 include("padding.jl")
 include("convolution.jl")
+include("viz.jl")
 include("io.jl")
 
 using .Synth
 using .Kernels
 using .Padding
 using .Convolution
+using .Viz
 using .PNM
 
-export Synth, Kernels, Padding, Convolution, PNM
+export Synth, Kernels, Padding, Convolution, Viz, PNM
 
 end # module ImageLab

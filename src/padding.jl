@@ -29,7 +29,7 @@ we'll compare against an inline bounds-aware variant that skips the copy.
 """
 module Padding
 
-export pad_array, padded_size
+export pad_array, pad_vector, padded_size
 
 const PAD_MODES = (:zero, :replicate, :reflect, :symmetric, :circular, :valid)
 
@@ -74,6 +74,33 @@ function pad_array(A::AbstractMatrix{T}, pad::NTuple{4,Int};
         si = _reflect_index(i - pt, H, mode)
         sj = _reflect_index(j - pl, W, mode)
         out[i, j] = A[si, sj]
+    end
+    return out
+end
+
+"""
+    pad_vector(v, p_left, p_right; mode=:zero) -> Vector
+
+1D counterpart of [`pad_array`](@ref). Pads vector `v` with `p_left` samples
+on the left and `p_right` on the right under `mode`. `mode = :valid` returns
+`v` unchanged.
+"""
+function pad_vector(v::AbstractVector{T}, p_left::Integer, p_right::Integer;
+                    mode::Symbol = :zero) where {T}
+    mode in PAD_MODES || throw(ArgumentError(
+        "unknown padding mode :$mode; expected one of $(PAD_MODES)"))
+    mode === :valid && return Vector{T}(v)
+
+    n = length(v)
+    np = n + p_left + p_right
+    out = mode === :zero ? zeros(T, np) : Vector{T}(undef, np)
+    @inbounds out[p_left+1:p_left+n] .= v
+    mode === :zero && return out
+
+    @inbounds for i in 1:np
+        (p_left + 1 ≤ i ≤ p_left + n) && continue
+        si = _reflect_index(i - p_left, n, mode)
+        out[i] = v[si]
     end
     return out
 end

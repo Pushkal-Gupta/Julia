@@ -108,19 +108,26 @@ julia> PNM.save_pgm("circle_edges.pgm", (edges .- minimum(edges)) ./ (maximum(ed
 
 ## Status
 
-**Milestone 1: Foundation — done.**
+**Milestone 1 (Foundation) — done.** Package skeleton, six padding modes,
+twelve canonical kernels, seven synthetic image generators, naive 2D
+correlation and convolution, pure-Julia PGM/PPM IO.
 
-- Package skeleton with five submodules.
-- Naive 2D correlation and convolution with six border modes.
-- Twelve canonical kernels.
-- Seven synthetic image generators.
-- 74 passing unit tests.
-- 8 sample PGM artifacts demonstrating blur, gradient, magnitude,
-  Laplacian, and sharpen on a synthetic image.
+**Milestone 2 (Convolution depth lab) — done.**
 
-**Milestone 2: Convolution depth lab — next.** Separable filters, 1D
-operators, stride and dilation, side-by-side padding-mode comparisons.
-See [ROADMAP.md](ROADMAP.md).
+- 1D `correlate1d` / `convolve1d` for vectors and matrices.
+- `separable_correlate2d` / `separable_convolve2d` (two-pass).
+- Pre-factored 1D kernels for Gaussian, box, Sobel, Prewitt, Scharr.
+- `factor_separable(K)` — SVD-based rank-1 detection.
+- New `Viz` submodule (`normalize01`, `signed_to_gray`, `montage`).
+- `examples/02_padding_modes_studio.jl` → six-tile comparison montage.
+- `examples/03_separable_vs_naive.jl` → measured **10.8× speedup at k=21**,
+  matching the theoretical `k/2 = 10.5×`.
+- 117 passing tests (was 74).
+- Concept docs: separable convolution, padding modes.
+
+**Milestone 3 (Edge detection lab v1) — next.** Gradient magnitude and
+direction, every classical operator side-by-side, LoG / DoG, zero-crossings,
+parameter sweeps. See [ROADMAP.md](ROADMAP.md).
 
 ## License
 

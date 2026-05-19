@@ -38,24 +38,42 @@ type promotion, padding as a separate concern from the inner loop, and why
 
 ---
 
-## Milestone 2 — Convolution depth lab
+## Milestone 2 — Convolution depth lab (✓ done)
 
 **Goal:** turn the naive engine into a proper teaching reference, and start
 building the comparison story that runs through the whole repo.
 
-Planned:
+Shipped:
 
-- 1D `correlate1d` / `convolve1d` with the same padding API.
-- **Separable convolution**: detect 1D-decomposable kernels (Gaussian, box,
-  Sobel) and run them as two 1D passes. Measure the speed-up.
-- **Stride and dilation** parameters.
-- Visualization script that walks the kernel across an image one step at a
-  time and saves a GIF-equivalent (numbered PGM frames). Pure intuition tool.
-- Side-by-side comparison grids for the six padding modes on a single
-  high-contrast image — the visual proof that the choice matters.
-- Concept doc `docs/concepts/02-correlation-vs-convolution.md`.
+- 1D `correlate1d` / `convolve1d` for both vectors and matrices (with
+  `axis=:horizontal/:x` or `:vertical/:y`).
+- `Padding.pad_vector` for the 1D case under all six border modes.
+- **Separable convolution**: `separable_correlate2d` / `separable_convolve2d`
+  (two-pass implementation) plus pre-factored canonical 1D kernels
+  (`gaussian1d`, `box1d`, `sobel_*_separable`, `prewitt_*_separable`,
+  `scharr_*_separable`).
+- **`factor_separable(K)`**: SVD-based rank-1 detection for arbitrary
+  kernels. Recovers factors that reproduce the naive 2D result to ~1e-10.
+- New `Viz` submodule with `normalize01`, `signed_to_gray`, and `montage`
+  for one-glance comparison grids.
+- **`examples/02_padding_modes_studio.jl`**: 96×96 image blurred with a
+  σ=3 Gaussian under all five non-`:valid` modes, packed into a 2×3
+  montage PGM.
+- **`examples/03_separable_vs_naive.jl`**: timing table across kernel
+  sizes 3..21. Measured speedup at k=21 is **10.8×** (theory says
+  k/2 = 10.5×). Max numerical drift between naive and separable: ~1e-15.
+- Concept docs: `docs/concepts/02-separable-convolution.md`,
+  `docs/concepts/03-padding-modes.md`.
+- 117 passing tests (was 74).
 
-Output artifacts: per-mode comparison grid, separable-vs-naive timing log.
+**Deferred to a later milestone:**
+
+- **Stride and dilation** parameters — not yet needed for the edge-detection
+  arc; will land alongside the feature-detection layer when we want to
+  build image pyramids cheaply.
+- **Kernel-walking visualization** (numbered PGMs for an animation) — fun
+  but lower leverage than the Canny pipeline; revisit when M8 (interactive
+  playground) starts.
 
 ---
 

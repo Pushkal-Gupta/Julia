@@ -20,7 +20,11 @@ module Kernels
 
 export box, gaussian, sobel_x, sobel_y, prewitt_x, prewitt_y,
        scharr_x, scharr_y, roberts_x, roberts_y,
-       laplacian4, laplacian8, laplacian_of_gaussian, sharpen, identity_kernel
+       laplacian4, laplacian8, laplacian_of_gaussian, sharpen, identity_kernel,
+       gaussian1d, box1d,
+       sobel_x_separable, sobel_y_separable,
+       prewitt_x_separable, prewitt_y_separable,
+       scharr_x_separable, scharr_y_separable
 
 """
     identity_kernel(n=3) -> Matrix{Float64}
@@ -159,5 +163,57 @@ unsharp masking blends with a blurred image instead.
 function sharpen(strength::Real = 1.0)
     return identity_kernel(3) .+ strength .* laplacian4()
 end
+
+# ── 1D / separable kernels ────────────────────────────────────────────────────
+# When a 2D kernel is rank-1 it can be applied as two 1D passes for a `k×k`
+# vs `2k` work saving. We expose the canonical 1D factors here so callers can
+# use `Convolution.separable_correlate2d` without re-deriving them.
+
+"""
+    box1d(n) -> Vector{Float64}
+
+The 1D box (uniform) filter of length `n`, normalized to sum to 1.
+Outer product `box1d(n) * box1d(n)' ≈ box(n)`.
+"""
+function box1d(n::Integer)
+    isodd(n) || throw(ArgumentError("kernel size must be odd, got $n"))
+    return fill(1.0 / n, n)
+end
+
+"""
+    gaussian1d(n; sigma=n/6) -> Vector{Float64}
+
+The 1D discretized Gaussian of length `n`, normalized to sum to 1. The 2D
+Gaussian factors exactly as its outer product with itself, so a 2D Gaussian
+blur with this factor + `Convolution.separable_correlate2d` is equivalent
+to (but much cheaper than) using `gaussian(n; sigma)` directly.
+"""
+function gaussian1d(n::Integer; sigma::Real = n / 6)
+    isodd(n) || throw(ArgumentError("kernel size must be odd, got $n"))
+    sigma > 0 || throw(ArgumentError("sigma must be positive, got $sigma"))
+    c = n ÷ 2 + 1
+    σ2 = 2 * sigma^2
+    v = [exp(-(i - c)^2 / σ2) for i in 1:n]
+    v ./= sum(v)
+    return v
+end
+
+# Sobel / Prewitt / Scharr: derivative in one axis × smoothing in the other.
+# Each returns `(kx, ky)` such that `ky * kx' == K_2d`.
+
+"""    sobel_x_separable() -> (kx, ky) such that `ky * kx' == sobel_x()`."""
+sobel_x_separable()  = ([-1.0, 0.0, 1.0], [1.0, 2.0, 1.0])
+"""    sobel_y_separable() -> (kx, ky) such that `ky * kx' == sobel_y()`."""
+sobel_y_separable()  = ([1.0, 2.0, 1.0], [-1.0, 0.0, 1.0])
+
+"""    prewitt_x_separable() -> (kx, ky)."""
+prewitt_x_separable() = ([-1.0, 0.0, 1.0], [1.0, 1.0, 1.0])
+"""    prewitt_y_separable() -> (kx, ky)."""
+prewitt_y_separable() = ([1.0, 1.0, 1.0], [-1.0, 0.0, 1.0])
+
+"""    scharr_x_separable() -> (kx, ky)."""
+scharr_x_separable() = ([-1.0, 0.0, 1.0], [3.0, 10.0, 3.0])
+"""    scharr_y_separable() -> (kx, ky)."""
+scharr_y_separable() = ([3.0, 10.0, 3.0], [-1.0, 0.0, 1.0])
 
 end # module Kernels
