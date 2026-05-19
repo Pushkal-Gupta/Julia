@@ -27,12 +27,15 @@ Public API:
 module Convolution
 
 using LinearAlgebra: svd
+using FFTW: rfft, irfft, plan_rfft, plan_irfft
 using ..Padding
 
 export correlate2d, correlate2d!, convolve2d, convolve2d!,
        correlate1d, convolve1d,
        separable_correlate2d, separable_convolve2d,
-       factor_separable
+       factor_separable,
+       correlate2d_inline,
+       fft_correlate2d, fft_convolve2d
 
 """
     correlate2d(image, kernel; pad=:replicate) -> Matrix
@@ -275,5 +278,179 @@ function factor_separable(K::AbstractMatrix{<:Real}; tol::Real = 1e-10)
     kx = F.Vt[1, :] .* σ
     return (kx, ky)
 end
+
+# ── Inline (no padding copy) correlation ──────────────────────────────────────
+# The standard `correlate2d` allocates a padded array and runs the inner loop
+# over it. That's two passes over memory: one to copy + fill borders, one to
+# correlate. The "inline" version below does it in one pass — the inner loop
+# samples the image directly and handles out-of-bounds reads itself.
+#
+# Whether this wins on wall-clock depends on kernel size: the inline version
+# saves the copy but adds a branch per inner-loop tap. For small kernels the
+# branch dominates; for large kernels the saved memory traffic dominates.
+# The benchmark in examples/11_performance_lab.jl measures the crossover.
+
+"""
+    correlate2d_inline(image, kernel; pad=:replicate) -> Matrix
+
+Same math as `correlate2d`, but doesn't allocate a padded array.
+Out-of-bounds reads inside the inner loop are resolved on the fly via
+the requested padding rule.
+
+The implementation splits the output into an interior region (where the
+kernel sits fully inside the image, so no bounds checks are needed) and
+a border region (where the padding rule fires). The interior is the hot
+loop and should match the original `correlate2d` performance modulo
+memory traffic; the border is small enough that the per-pixel cost
+doesn't matter.
+"""
+function correlate2d_inline(image::AbstractMatrix{T},
+                            kernel::AbstractMatrix{K};
+                            pad::Symbol = :replicate) where {T<:Real, K<:Real}
+    kh, kw = size(kernel)
+    isodd(kh) && isodd(kw) || throw(ArgumentError(
+        "kernel dimensions must be odd, got $((kh, kw))"))
+    pad === :valid && throw(ArgumentError(
+        ":valid is not implemented for correlate2d_inline yet"))
+
+    H, W = size(image)
+    ph, pw = kh ÷ 2, kw ÷ 2
+    R = promote_type(T, K, Float64)
+    out = Matrix{R}(undef, H, W)
+
+    # Interior: i in ph+1:H-ph and j in pw+1:W-pw. Every kernel tap lands
+    # in-bounds, so no padding logic in the inner loop.
+    @inbounds for j in (pw + 1):(W - pw)
+        for i in (ph + 1):(H - ph)
+            s = zero(R)
+            for jk in 1:kw, ik in 1:kh
+                s += image[i + ik - 1 - ph, j + jk - 1 - pw] * kernel[ik, jk]
+            end
+            out[i, j] = s
+        end
+    end
+
+    # Border: pixels close enough to the edge that at least one kernel tap
+    # is out-of-bounds. Sample via the padding rule.
+    @inbounds for j in 1:W, i in 1:H
+        # Skip interior — already done.
+        if (ph + 1 ≤ i ≤ H - ph) && (pw + 1 ≤ j ≤ W - pw)
+            continue
+        end
+        s = zero(R)
+        for jk in 1:kw, ik in 1:kh
+            si = i + ik - 1 - ph
+            sj = j + jk - 1 - pw
+            v = _sample_with_pad(image, si, sj, H, W, pad)
+            s += v * kernel[ik, jk]
+        end
+        out[i, j] = s
+    end
+    return out
+end
+
+# Pad-aware sampling for the inline path. Branches on `pad` once per call,
+# which the compiler usually hoists out of the inner kernel-tap loop.
+@inline function _sample_with_pad(A::AbstractMatrix, si::Int, sj::Int,
+                                  H::Int, W::Int, pad::Symbol)
+    if (1 ≤ si ≤ H) && (1 ≤ sj ≤ W)
+        return @inbounds A[si, sj]
+    elseif pad === :zero
+        return zero(eltype(A))
+    elseif pad === :replicate
+        return @inbounds A[clamp(si, 1, H), clamp(sj, 1, W)]
+    elseif pad === :reflect
+        return @inbounds A[_refl(si, H), _refl(sj, W)]
+    elseif pad === :symmetric
+        return @inbounds A[_symm(si, H), _symm(sj, W)]
+    elseif pad === :circular
+        return @inbounds A[mod(si - 1, H) + 1, mod(sj - 1, W) + 1]
+    else
+        # Fall back to zero on unknown — caller should have validated.
+        return zero(eltype(A))
+    end
+end
+
+@inline function _refl(idx::Int, n::Int)
+    1 ≤ idx ≤ n && return idx
+    period = 2 * (n - 1)
+    period == 0 && return 1
+    k = mod(idx - 1, period)
+    return 1 + (k ≤ n - 1 ? k : period - k)
+end
+
+@inline function _symm(idx::Int, n::Int)
+    1 ≤ idx ≤ n && return idx
+    period = 2 * n
+    k = mod(idx - 1, period)
+    return 1 + (k < n ? k : period - 1 - k)
+end
+
+# ── FFT-based correlation and convolution ─────────────────────────────────────
+# For a kernel of size `k × k` on an `H × W` image, naive 2D is `O(H·W·k²)`
+# work; FFT-based is `O(H·W · log(H·W))` regardless of k. FFT wins when k is
+# big enough that `k² > log(H·W)`, which is roughly k > 15 for typical image
+# sizes — but the constants matter, and the benchmark is the only honest
+# way to find the crossover.
+#
+# Two padding choices make sense here:
+#   :zero     — pad image with zeros, then FFT.
+#   :circular — use the FFT's implicit periodicity directly.
+#
+# Other modes (:reflect, :replicate, :symmetric) don't combine cleanly with
+# the FFT and aren't supported here.
+
+"""
+    fft_correlate2d(image, kernel; pad=:zero) -> Matrix{Float64}
+
+Same math as `correlate2d`, computed via FFT. Always returns a
+`Matrix{Float64}`. Only `pad = :zero` and `pad = :circular` are
+supported (other modes don't combine cleanly with the FFT).
+
+Implementation note: for `:zero`, both the image and the (flipped)
+kernel are zero-padded to `(H + kh − 1, W + kw − 1)`, FFT'd via
+`rfft`, multiplied, and inverse-FFT'd. The "same"-sized output is
+extracted from the center of the full result. For `:circular`, the
+kernel is `circshift`-aligned so the kernel center sits at index
+`(1, 1)`, and the image is FFT'd directly at its native size.
+"""
+function fft_correlate2d(image::AbstractMatrix{<:Real},
+                         kernel::AbstractMatrix{<:Real};
+                         pad::Symbol = :zero)
+    kh, kw = size(kernel)
+    isodd(kh) && isodd(kw) || throw(ArgumentError(
+        "kernel dimensions must be odd, got $((kh, kw))"))
+    pad in (:zero, :circular) || throw(ArgumentError(
+        "fft_correlate2d only supports :zero and :circular padding, got :$pad"))
+
+    H, W = size(image)
+    ph, pw = kh ÷ 2, kw ÷ 2
+    K_flipped = reverse(reverse(kernel; dims = 1); dims = 2)
+
+    if pad === :zero
+        pH = H + kh - 1
+        pW = W + kw - 1
+        A_padded = zeros(Float64, pH, pW)
+        K_padded = zeros(Float64, pH, pW)
+        A_padded[1:H, 1:W] .= Float64.(image)
+        K_padded[1:kh, 1:kw] .= Float64.(K_flipped)
+        full = irfft(rfft(A_padded) .* rfft(K_padded), pH)
+        return full[(ph + 1):(ph + H), (pw + 1):(pw + W)]
+    else  # :circular
+        K_padded = zeros(Float64, H, W)
+        K_padded[1:kh, 1:kw] .= Float64.(K_flipped)
+        K_padded = circshift(K_padded, (-ph, -pw))
+        A = Float64.(image)
+        return irfft(rfft(A) .* rfft(K_padded), H)
+    end
+end
+
+"""
+    fft_convolve2d(image, kernel; pad=:zero) -> Matrix{Float64}
+
+Mathematical convolution (kernel flipped) via FFT.
+"""
+fft_convolve2d(image::AbstractMatrix, kernel::AbstractMatrix; pad::Symbol = :zero) =
+    fft_correlate2d(image, reverse(reverse(kernel; dims = 1); dims = 2); pad = pad)
 
 end # module Convolution

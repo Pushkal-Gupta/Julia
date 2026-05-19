@@ -7,7 +7,8 @@ will land here later.
 """
 module Viz
 
-export normalize01, montage, signed_to_gray
+export normalize01, montage, signed_to_gray,
+       draw_line!, mark_points!, label_to_gray
 
 """
     normalize01(x) -> Matrix{Float64}
@@ -64,6 +65,86 @@ function montage(images::AbstractVector{<:AbstractMatrix{<:Real}};
         i0 = r * (h + gap) + 1
         j0 = c * (w + gap) + 1
         out[i0:i0+h-1, j0:j0+w-1] .= Float64.(img)
+    end
+    return out
+end
+
+"""
+    draw_line!(img, y0, x0, y1, x1; value=1.0)
+
+Rasterize a straight line from `(y0, x0)` to `(y1, x1)` into `img`
+using Bresenham's algorithm. Pixels outside `img` are skipped
+silently. Mutates and returns `img`.
+
+I'm using `(row, col)` indexing to match the rest of the package
+(`img[i, j]` means row `i`, column `j`), so the `y*` arguments are
+row indices and `x*` are column indices.
+"""
+function draw_line!(img::AbstractMatrix, y0::Integer, x0::Integer,
+                    y1::Integer, x1::Integer; value::Real = 1.0)
+    H, W = size(img)
+    x0, x1, y0, y1 = Int(x0), Int(x1), Int(y0), Int(y1)
+    dx = abs(x1 - x0); dy = abs(y1 - y0)
+    sx = x0 < x1 ? 1 : -1
+    sy = y0 < y1 ? 1 : -1
+    err = dx - dy
+    x, y = x0, y0
+    while true
+        if 1 ≤ y ≤ H && 1 ≤ x ≤ W
+            img[y, x] = value
+        end
+        (x == x1 && y == y1) && break
+        e2 = 2 * err
+        if e2 > -dy
+            err -= dy
+            x += sx
+        end
+        if e2 < dx
+            err += dx
+            y += sy
+        end
+    end
+    return img
+end
+
+"""
+    mark_points!(img, points; size=1, value=1.0)
+
+Stamp a small filled square of half-width `size` at each `(row, col)`
+position in `points`. `size=1` gives a 3×3 marker. Useful for overlaying
+detected feature points (corners, template matches) onto an image.
+"""
+function mark_points!(img::AbstractMatrix, points;
+                      size::Integer = 1, value::Real = 1.0)
+    H, W = Base.size(img)
+    @inbounds for (i, j) in points
+        for dj in -size:size, di in -size:size
+            ni, nj = i + di, j + dj
+            (1 ≤ ni ≤ H && 1 ≤ nj ≤ W) && (img[ni, nj] = value)
+        end
+    end
+    return img
+end
+
+"""
+    label_to_gray(labels::AbstractMatrix{Int}; n::Integer = maximum(labels)) -> Matrix{Float64}
+
+Map a connected-components label image to grayscale so each component
+gets a different intensity. Background (label 0) stays 0.0. Labels
+are interleaved across the `[0.2, 1.0]` range so adjacent integers
+don't end up next to each other in brightness — useful when neighboring
+components have consecutive IDs.
+"""
+function label_to_gray(labels::AbstractMatrix{Int};
+                       n::Integer = maximum(labels))
+    out = zeros(Float64, Base.size(labels))
+    n ≤ 0 && return out
+    @inbounds for k in eachindex(labels)
+        v = labels[k]
+        v == 0 && continue
+        # Bit-reversal-ish interleaving so consecutive IDs are far apart in gray.
+        frac = ((v * 0.6180339887) % 1.0)   # golden-ratio scramble
+        out[k] = 0.2 + 0.8 * frac
     end
     return out
 end

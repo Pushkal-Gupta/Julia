@@ -35,12 +35,30 @@ A small package at `src/ImageLab.jl` with these submodules:
   `nonmaximum_suppression`, `double_threshold`, `hysteresis`, and a
   `canny` / `canny_stages` entry point that returns either the final
   edge map or every intermediate.
+- `Filters` — non-linear and edge-preserving smoothers: `median_filter`,
+  `bilateral_filter`, and `binary_dilate` for morphological tolerance
+  on edge masks.
+- `Features` — Harris corner detector (`harris_response`,
+  `harris_corners`), Hough line transform (`hough_lines`,
+  `hough_peaks`, `HoughAccumulator`), connected component labeling
+  (`connected_components`, `component_sizes`), and normalized
+  cross-correlation template matching (`normalized_cross_correlation`,
+  `ncc_peaks`).
+- `Pyramids` — Burt-Adelson Gaussian and Laplacian pyramids
+  (`reduce_image`, `expand_image`, `gaussian_pyramid`,
+  `laplacian_pyramid`, `reconstruct_laplacian_pyramid`). The
+  Laplacian pyramid is an exact invertible multi-scale decomposition
+  — reconstruction matches the original to a single ULP.
+- `Metrics` — `edge_match_stats(predicted, gt; tolerance)` returns
+  precision / recall / F1; `iou_score` for a single-number summary.
 - `Viz` — `normalize01`, `signed_to_gray` (for signed gradient images),
-  and a `montage` helper for assembling comparison grids.
+  `montage` for assembling comparison grids, plus drawing helpers:
+  `draw_line!` (Bresenham), `mark_points!` for feature overlays, and
+  `label_to_gray` for colorizing connected-components output.
 - `PNM` — pure-Julia Netpbm (PGM/PPM) reader and writer. No external
   deps; opens in Preview on macOS.
 
-Tests live in `test/` and currently pass 169. Run them with
+Tests live in `test/` and currently pass 290. Run them with
 `julia --project=. test/runtests.jl`.
 
 ## Quickstart
@@ -60,6 +78,11 @@ julia --project=. examples/04_edge_operator_studio.jl
 julia --project=. examples/05_log_dog_zero_crossings.jl
 julia --project=. examples/06_canny_pipeline.jl
 julia --project=. examples/07_canny_parameter_sweep.jl
+julia --project=. examples/08_noise_lab.jl
+julia --project=. examples/09_corners_and_lines.jl
+julia --project=. examples/10_components_and_templates.jl
+julia --project=. examples/11_performance_lab.jl
+julia --project=. examples/12_pyramid_decomposition.jl
 open artifacts/
 ```
 
@@ -114,10 +137,91 @@ edge map. `examples/06_canny_pipeline.jl` walks every stage on one
 input; `examples/07_canny_parameter_sweep.jl` runs a 3×3 grid over
 (σ, low, high) so I can see how each knob affects the output.
 
-Next I want to test the pipeline against denoising. Pick the same
-Canny parameters, vary the pre-smoothing strategy (box / Gaussian /
-median / bilateral), score against a ground-truth edge map I can
-synthesize.
+After that I wrote `Filters` (median, bilateral, binary dilation) and
+`Metrics` (precision / recall / F1 with a pixel-tolerance, plus IoU),
+then `examples/08_noise_lab.jl`, which sets Canny against eight
+smoother choices on two noise types and scores each one against a
+ground-truth edge map (the Canny output on the clean image).
+
+The result was a much cleaner story than I expected:
+
+- On Gaussian noise, every smoother gets F1 above 0.98 and the
+  differences between them are fractions of a percent. Bilateral
+  edges out the rest (0.995), but you don't really need it.
+- On salt-and-pepper noise, the picture is brutal. With no smoother
+  F1 is 0.21 — every speck becomes a tiny false edge. Median 5×5
+  jumps it to 0.99. Bilateral fails completely (0.21, same as no
+  smoother) because it treats each speck as an edge worth preserving
+  — the same property that wins it the Gaussian-noise race.
+
+Full numbers in `docs/concepts/07-noise-and-preprocessing.md`.
+
+After the noise study came the features layer — Harris corners,
+Hough lines, connected components, and normalized cross-correlation
+template matching. Two studios:
+
+- `examples/09_corners_and_lines.jl` runs Harris and Hough on a
+  scene of two rectangles and a triangle. Harris finds 11 corners
+  (matching the 4+4+3 geometric corners exactly). Hough finds 10
+  peaks against the 11 actual sides — usually the missing one is a
+  short edge whose votes spread thinly enough to fall under the
+  threshold.
+- `examples/10_components_and_templates.jl` does two things on
+  separate inputs. First: Canny → connected components → component
+  sizes on a multi-shape image. Then: NCC template matching against
+  six disks of varying intensity, half of which sit in a darkened
+  region of the image. NCC's brightness invariance picks all six up,
+  scoring five at exactly 1.0 and one at 0.974 — the 0.974 one
+  straddles the brightness boundary and so isn't uniform anymore,
+  which is what NCC should report.
+
+Concept doc: `docs/concepts/08-features.md`.
+
+After that came the performance lab. I added two new convolution
+implementations: `correlate2d_inline` (no padding copy, single bounds-aware
+loop split into interior + border), and `fft_correlate2d` /
+`fft_convolve2d` via FFTW. Then `examples/11_performance_lab.jl`
+benchmarks all four (naive, inline, separable, FFT) across kernel
+sizes 3..31 on a 384×384 image with `BenchmarkTools`.
+
+A few results that surprised me:
+
+- Inline is basically a wash with naive. The folk wisdom that "the
+  padding copy is the bottleneck" is wrong here — the inner-loop
+  arithmetic dominates. Best inline result was a 5% speedup at k=31.
+- Separable matches theory (`k/2` speedup) and *beats* it at k=31
+  (20× measured vs 15.5× theoretical), I'm pretty sure because the
+  two passes fit cleaner in L2 cache.
+- FFT crossover is around k≈25 on this image size. Below that
+  separable wins; above it FFT pulls ahead (29.6× vs naive at k=31).
+- A `@code_warntype` pass on the hot paths showed zero `::Any` and
+  zero `::Union` boxes — the compiler can specialize every inner
+  loop on the concrete element type.
+
+Full numbers in `docs/concepts/09-performance.md`.
+
+After the performance lab came image pyramids. `Pyramids.reduce_image`
+and `Pyramids.expand_image` are the Burt-Adelson 1983 operators (the
+5-tap binomial filter `[1, 4, 6, 4, 1] / 16` plus zero-insertion with
+a 4× energy compensation). On top of those, `gaussian_pyramid` and
+`laplacian_pyramid` give multi-scale decompositions, and
+`reconstruct_laplacian_pyramid` inverts them.
+
+The headline number for the Laplacian pyramid: on a 128×128 input
+with 4 levels, the round-trip reconstruction error is
+`5.55e-17` — a single ULP of `Float64`. Exact invertibility, not
+approximate. The reason this works even though `expand(reduce(I))`
+isn't exact at the borders is that the same border bias appears in
+both directions and cancels.
+
+`examples/12_pyramid_decomposition.jl` builds a 5-level Gaussian
+and Laplacian pyramid, shows them in a 2-row montage, and prints
+the reconstruction error.
+
+Next up: anisotropic diffusion (Perona–Malik, the non-linear
+smoothing companion to bilateral), then probably real-image I/O via
+`ImageIO` so I can run the whole pipeline on actual photos instead
+of just synthetic inputs.
 
 ## House rules
 
@@ -150,6 +254,10 @@ A few things I've decided up front so I don't drift:
 │   ├── padding.jl
 │   ├── convolution.jl
 │   ├── edges.jl
+│   ├── filters.jl
+│   ├── features.jl
+│   ├── pyramids.jl
+│   ├── metrics.jl
 │   ├── viz.jl
 │   └── io.jl
 ├── test/
@@ -160,7 +268,12 @@ A few things I've decided up front so I don't drift:
 │   ├── 04_edge_operator_studio.jl
 │   ├── 05_log_dog_zero_crossings.jl
 │   ├── 06_canny_pipeline.jl
-│   └── 07_canny_parameter_sweep.jl
+│   ├── 07_canny_parameter_sweep.jl
+│   ├── 08_noise_lab.jl
+│   ├── 09_corners_and_lines.jl
+│   ├── 10_components_and_templates.jl
+│   ├── 11_performance_lab.jl
+│   └── 12_pyramid_decomposition.jl
 ├── docs/concepts/
 └── artifacts/      # generated PGMs, gitignored except .gitkeep
 ```

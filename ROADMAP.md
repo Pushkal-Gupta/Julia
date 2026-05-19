@@ -6,9 +6,8 @@ worth recording mid-build I jot it down here. Nothing is on a schedule.
 
 ## Where I'm at
 
-The convolution engine, the 1D / separable layer, all the edge
-operators, and the full Canny pipeline are done. I'm starting on the
-noise / preprocessing experiments next.
+Engine, depth, edges, Canny, noise study, and the features layer are
+done. Next is the performance lab.
 
 Roughly:
 
@@ -16,7 +15,11 @@ Roughly:
 - Convolution depth (1D, separable, factor_separable) — done
 - Edge operators (first- and second-order) — done
 - Canny pipeline from scratch — done
-- Noise + preprocessing experiments — next
+- Noise + preprocessing study with precision/recall metrics — done
+- Features (Harris, Hough, connected components, template match) — done
+- Performance lab (BenchmarkTools, inline conv, FFT crossover) — done
+- Image pyramids and scale-space basics — done
+- Anisotropic diffusion (Perona–Malik) — next
 - Performance lab (benchmarks, FFT crossover, `@code_warntype`) — folded
   in as needed; a real pass once Canny is solid
 - Features (Harris, Hough, connected components, template matching) —
@@ -140,50 +143,115 @@ Concept note: `docs/concepts/06-canny.md`.
 
 ## Noise + preprocessing
 
-Once Canny is solid, I want to ask: how much does the denoiser matter?
+What I built:
 
-- Box vs Gaussian vs median vs bilateral.
-- Salt-and-pepper noise vs Gaussian noise inputs.
-- Same Canny parameters, sweep the denoiser, compare against the
-  noise-free ground-truth edge map.
+- `Filters` module — `median_filter` (rank filter, kills salt-and-pepper),
+  `bilateral_filter` (edge-preserving, spatial × intensity Gaussian
+  weighting), and `binary_dilate` (8-connected morphological
+  dilation, used to give edge matching a pixel-level tolerance).
+- `Metrics` module — `edge_match_stats(predicted, gt; tolerance)`
+  returns precision / recall / F1; `iou_score` for a single-number
+  summary.
+- `examples/08_noise_lab.jl` runs eight smoothers (none, box 3×3 /
+  5×5, Gaussian σ=1 / σ=2, median 3×3 / 5×5, bilateral) against
+  two noise types (Gaussian and salt-and-pepper), scoring each
+  Canny output against the noise-free Canny reference.
 
-The synthetic image generators already produce ground-truth edge
-locations, so I can score this quantitatively (precision/recall on
-edge pixels at a fixed dilation tolerance).
+Headline numbers (F1 at 1-pixel tolerance):
+
+- Gaussian noise: every smoother lands above 0.98. Bilateral nudges
+  out the field at 0.995.
+- Salt-and-pepper: dramatic. F1 = 0.21 with no smoother, 0.989 with
+  median 5×5. Bilateral fails completely (0.21) because it
+  preserves the salt specks as edges.
+
+Concept note: `docs/concepts/07-noise-and-preprocessing.md`.
 
 ## Performance lab
 
-The performance question I want to answer cleanly: where does FFT-based
-convolution beat the naive nested loop, and where does the separable
-two-pass approach beat both?
+What I built:
 
-- Naive 2D loop (already have).
-- Inline bounds-aware loop that skips the padding copy.
-- Separable two-pass (already have).
-- FFT-based convolution using `FFTW`. This is the one new dependency
-  I'd justify here.
+- `correlate2d_inline` — no padding copy. Splits the output into an
+  interior region (in-bounds, tight inner loop) and a border region
+  (bounds-aware sampling via the padding rule).
+- `fft_correlate2d` and `fft_convolve2d` — FFT-based, via FFTW.
+  Supports `:zero` and `:circular` padding (other modes don't combine
+  cleanly with the FFT). Uses `rfft` for real-valued speedups.
+- `examples/11_performance_lab.jl` — `BenchmarkTools` measurements of
+  all four implementations on a 384×384 image at kernel sizes 3..31.
 
-For each: kernel size sweep on a 1024×1024 image, log-log plot of
-ms-per-megapixel, identify the crossover points. A real benchmark
-suite using `BenchmarkTools` (not `@elapsed`).
+Headline measurements (best-of-8, on a 384×384 image):
 
-While I'm at it I want to do a `@code_warntype` audit on the hot paths
-and document anything I find. Type instability is the easiest Julia
-performance bug to introduce by accident.
+```
+k    naive (ms)   inline (ms)  separable    fft (ms)
+3        1.20        1.27        1.23        5.91
+9        4.30        4.65        1.85        1.69
+15      16.58       17.05        3.01        6.04
+21      39.61       40.61        3.59        5.85
+31      98.12       93.71        4.88        3.31
+```
+
+What surprised me: the inline version is essentially a wash with
+naive. The padding copy isn't the bottleneck — the inner loop
+arithmetic is. Separable matches the theoretical `k/2` speedup and
+slightly *beats* it at k=31 (probably L2 cache effects from the
+narrower working set per 1D pass). FFT crossover with separable is
+around k=25 on this image size.
+
+A `@code_warntype` audit on the hot paths (`correlate2d`,
+`correlate2d_inline`, `_correlate_into!`, `gradient_magnitude`,
+`nonmaximum_suppression`, `fft_correlate2d`) reports zero `::Any` and
+zero `::Union` boxes. Every inner loop is specializable on the
+concrete element type.
+
+Concept note: `docs/concepts/09-performance.md`.
 
 ## Features
 
-This gets us into proper computer vision territory:
+What I built:
 
-- Harris corner detector — a Sobel-flavored window response built on
-  what I already have.
-- Hough transform for lines.
-- Connected component labeling on the Canny output.
-- Template matching via normalized cross-correlation.
-- Image pyramids and a small scale-space exploration.
+- `harris_response(img; sigma, k)` — the 2×2 structure tensor smoothed
+  with a separable Gaussian; response = `det(M) - k·trace(M)²`. The
+  classic Harris.
+- `harris_corners(img; threshold, min_distance)` — local-max picking
+  with Chebyshev NMS so I don't get clusters of detections per corner.
+  On the geometric test image (4 + 4 + 3 corners): finds 11 corners,
+  exactly the right count.
+- `hough_lines(edges; n_theta, rho_step)` — accumulator over `(θ, ρ)`
+  with `ρ = j·cos(θ) + i·sin(θ)`. Returns a `HoughAccumulator` struct
+  with the counts and bin centers.
+- `hough_peaks(acc; threshold, min_distance_*, max_peaks)` — local max
+  picking on the accumulator, tie-broken to prefer smaller θ so
+  vertical-line output is predictable (without the tie-break, every
+  vertical line has two equivalent peaks at θ ≈ 0 and θ ≈ π).
+- `connected_components(mask; connectivity=4|8)` — stack-based DFS
+  labeling. Pairs with `component_sizes(labels, n)` for size-based
+  filtering of spurious tiny components.
+- `normalized_cross_correlation(img, template)` — brightness- and
+  contrast-invariant template matching. Output in `[-1, 1]`. Verified
+  on a 6-disk test image where the right half is darkened — NCC still
+  scores all 6 disks at 0.974 or higher.
+- `ncc_peaks(ncc; threshold, min_distance)` — pick top matches.
 
-These don't need to be industrial-strength; they need to be teachable
-and produce visible outputs.
+Two studios:
+
+- `examples/09_corners_and_lines.jl` — Harris + Hough on a
+  rectangles-and-triangle scene. 3×2 montage with input, Harris
+  response, corners overlay, Canny edges, detected lines on black,
+  and lines overlaid on the input.
+- `examples/10_components_and_templates.jl` — two halves on two
+  different inputs. CC on a multi-shape Canny output (19 components,
+  with a heavy tail of small ones — exactly the filtering target),
+  plus NCC on a 6-disk varying-intensity scene.
+
+Drawing helpers in `Viz`:
+
+- `draw_line!(img, y0, x0, y1, x1; value)` — Bresenham line raster.
+- `mark_points!(img, points; size, value)` — stamps for feature overlays.
+- `label_to_gray(labels)` — golden-ratio scrambled grayscale so
+  adjacent label IDs come out as distant intensities.
+
+Concept note: `docs/concepts/08-features.md`.
 
 ## Interactive playground
 
@@ -191,6 +259,29 @@ Pluto notebook with sliders for σ, kernel size, thresholds, denoiser
 choice, operator choice — one knob per question I keep asking the
 static example scripts. Pluto is the path of least friction on Julia
 1.11; if I find it slow I'll try a Makie window instead.
+
+## Image pyramids
+
+What I built:
+
+- `reduce_image(img)` — smooth with the Burt-Adelson 5-tap binomial
+  filter `[1, 4, 6, 4, 1] / 16`, then downsample by 2.
+- `expand_image(img, target_size)` — zero-insert, then smooth with
+  the same filter scaled for 4× energy compensation (split as `2×`
+  per separable 1D pass).
+- `gaussian_pyramid(img; levels)` — vector of `levels + 1` images at
+  halving resolution.
+- `laplacian_pyramid(img; levels)` — the band-pass decomposition
+  `L_k = G_k − EXPAND(G_{k+1})` plus the residual.
+- `reconstruct_laplacian_pyramid(L)` — exact inverse.
+
+The reconstruction is *exact* to within float-64 ULP precision
+(measured: `5.55e-17` max abs error on a 128×128 test image). The
+trick: even though `expand(reduce(I))` isn't exact at the borders,
+the same border bias appears in both directions and the Laplacian
+pyramid records and undoes it perfectly.
+
+Concept note: `docs/concepts/10-pyramids.md`.
 
 ## Stretch
 
