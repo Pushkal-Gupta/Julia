@@ -66,8 +66,16 @@ A small package at `src/ImageLab.jl` with these submodules:
 - `Photos` — PNG / TIFF / Netpbm I/O via `FileIO` + `ImageIO`.
   `load_grayscale(path)` returns a `Matrix{Float64}` in `[0, 1]`;
   `save_grayscale` and the RGB pair go the other way.
+- `RayTracer` — a small Whitted-style ray tracer (spheres, planes,
+  point lights, hard shadows, mirror reflection). Renders into
+  three `Matrix{Float64}` channels so the rest of the pipeline
+  (Photos, PNM, Viz) can take over from there.
+- `AutoDiff` — differentiable filters via ForwardDiff. The naive
+  `correlate2d` happens to be type-generic, so `Dual`-valued
+  kernels just work; on top of that I built `kernel_loss`,
+  `kernel_gradient`, and a tiny SGD loop in `fit_kernel`.
 
-Tests live in `test/` and currently pass 374. Run them with
+Tests live in `test/` and currently pass 432. Run them with
 `julia --project=. test/runtests.jl`.
 
 ## Quickstart
@@ -97,6 +105,8 @@ julia --project=. examples/14_real_image_pipeline.jl   # or pass a PNG path
 julia --project=. examples/15_multiscale_harris.jl
 julia --project=. examples/16_laplacian_blending.jl
 julia --project=. examples/17_convolution_as_linear_algebra.jl
+julia --project=. examples/18_tiny_ray_tracer.jl
+julia --project=. examples/19_differentiable_filters.jl
 open artifacts/
 ```
 
@@ -314,11 +324,60 @@ strong low-pass filter, but read straight off the matrix's spectrum.
 eigenvalue computations, and saves the matrices as images so the
 band structure is visible.
 
-Next: probably the ray tracer — a small standalone module that
-makes Julia feel like a general-purpose tool, not just an
-image-processing one. Differentiable filters via ForwardDiff is
-also on the table; might combine both into one ambitious chunk
-since each is small.
+Then I built the ray tracer, mostly to prove to myself that I can
+write something in Julia that isn't an image filter. `RayTracer` is
+a small Whitted-style renderer — `V3` arithmetic, ray-sphere and
+ray-plane intersection, Phong shading with hard shadows, recursive
+mirror reflection capped by a depth parameter. The basic scene
+(red and blue spheres plus a chrome sphere over a checkerboard
+floor) renders at 384×256 in 0.22 seconds, about 2.2 microseconds
+per pixel.
+
+The reason this slots into `ImageLab` and not its own repo:
+`render(scene, camera)` returns `(R, G, B)` as three
+`Matrix{Float64}` channels in `[0, 1]`. That's the same shape
+`Photos.save_rgb_planes` and `PNM.save_ppm` expect, so a finished
+render is a first-class image — I can take its luminance and run
+Canny on it, build a Gaussian pyramid of it, fit a Toeplitz
+matrix to a row of it. Synthesis (ray tracer) and analysis (every
+other module) meet at the same data type.
+
+`examples/18_tiny_ray_tracer.jl` renders the basic scene, a
+depth-by-depth comparison showing what each bounce adds (max
+luminance: 0.92 → 0.74 → 0.74 → 0.74 — two bounces is enough), a
+three-angle camera orbit, and the luminance of the basic render so
+I can feed it back to the rest of the pipeline.
+
+Then I did the differentiable-filters chunk, which closes out the
+classical → modern bridge. The whole thing rests on a single
+observation: my naive `correlate2d` from the very first chunk of this
+repo is generic over its element type, so I can pass a kernel made of
+`ForwardDiff.Dual` numbers and the autodiff machinery just goes
+through it. The submodule (`AutoDiff`) on top is ~100 lines:
+`kernel_loss` (MSE between filter output and target),
+`kernel_gradient` (one call to `ForwardDiff.gradient`), and
+`fit_kernel` (vanilla SGD).
+
+The demo learns four classical kernels — Sobel-x, Sobel-y,
+Laplacian, sharpen — from input/target pairs starting at random
+initializations. In 800 SGD steps at `lr = 0.1`, every kernel
+converges to within `~1e-6` of the hand-written one. The learned
+Sobel-x prints out as exactly the textbook `[-1 0 1; -2 0 2; -1 0 1]`
+to 4 decimal places.
+
+One thing the chunk made me confront explicitly: I tried training on
+a checkerboard first and the optimizer fit the *loss* but not the
+*kernel* — the recovered numbers were 0.12 off in places. The
+checkerboard underdetermines the kernel, because only a few distinct
+3×3 patches appear. Switching to a uniform-noise training image
+makes every 3×3 patch unique and the system becomes well-posed. Same
+lesson that haunts deep-learning data preparation.
+
+That bridges classical CV (write the kernel) and modern CV (learn
+it) through one ~100-line submodule and the exact same convolution
+code I wrote on day one. Whichever direction I take this repo next,
+that connection feels like the right place to stop the linear
+trajectory.
 
 ## House rules
 
@@ -358,7 +417,9 @@ A few things I've decided up front so I don't drift:
 │   ├── linalg_view.jl
 │   ├── viz.jl
 │   ├── io.jl
-│   └── photos.jl
+│   ├── photos.jl
+│   ├── raytracer.jl
+│   └── autodiff.jl
 ├── test/
 ├── examples/
 │   ├── 01_first_convolutions.jl
@@ -377,7 +438,9 @@ A few things I've decided up front so I don't drift:
 │   ├── 14_real_image_pipeline.jl
 │   ├── 15_multiscale_harris.jl
 │   ├── 16_laplacian_blending.jl
-│   └── 17_convolution_as_linear_algebra.jl
+│   ├── 17_convolution_as_linear_algebra.jl
+│   ├── 18_tiny_ray_tracer.jl
+│   └── 19_differentiable_filters.jl
 ├── docs/concepts/
 └── artifacts/      # generated PGMs, gitignored except .gitkeep
 ```

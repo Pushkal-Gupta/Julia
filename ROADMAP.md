@@ -25,8 +25,11 @@ Roughly:
 - Laplacian-pyramid image blending — done
 - Linear-algebra view of convolution (Toeplitz / circulant matrices,
   DFT diagonalization) — done
-- Next: tiny ray tracer for Julia practice outside imaging, then
-  differentiable filters via ForwardDiff
+- Tiny ray tracer (Whitted-style, spheres + planes + mirror
+  reflection) — done
+- Differentiable filters via ForwardDiff (autodiff on the classical
+  convolution operators; learn Sobel/Laplacian/sharpen from
+  input-target pairs) — done
 - Performance lab (benchmarks, FFT crossover, `@code_warntype`) — folded
   in as needed; a real pass once Canny is solid
 - Features (Harris, Hough, connected components, template matching) —
@@ -328,6 +331,86 @@ Two payoff results from the studio script:
 For teaching, not performance — materializing the matrix is
 `O(n²)`. Concept note: `docs/concepts/15-conv-as-linear-algebra.md`.
 
+## Tiny ray tracer
+
+What I built:
+
+- `RayTracer` submodule. `V3` arithmetic, `Ray` (auto-normalizing
+  direction), `Material` (Phong terms + reflectivity), `Sphere`,
+  `Plane` (with optional checkerboard texture), `PointLight`, `Camera`
+  (fov + look-at), `Scene` (mutable bag of objects, lights, ambient,
+  background).
+- `intersect_object(ray, sphere|plane)` returns a `Hit` or `nothing`.
+  Sphere via the simplified-quadratic-discriminant trick (works
+  because rays carry unit directions). Plane via the standard
+  ray-plane formula, with the returned normal flipped to face the
+  ray so both sides shade correctly.
+- `shade(scene, ray, hit)` — ambient + Σ_lights (Lambertian diffuse +
+  Blinn-Phong specular), with a hard-shadow test per light.
+- `trace(scene, ray; depth)` — recursive primary call plus one mirror
+  bounce per `depth`. The reflection direction is the standard
+  `r − 2(r · n) n` formula.
+- `render(scene, camera; width, height, depth)` returns the three
+  `Matrix{Float64}` colour channels in `[0, 1]`, clamped, so the rest
+  of `ImageLab` (`PNM.save_ppm`, `Photos.save_rgb_planes`, `Viz`)
+  picks it up unchanged.
+- `basic_scene()` — the canonical demo (red + blue + chrome spheres
+  over a checker floor with one warm key light).
+
+Runtime: 384×256 at depth 3 in **0.22 seconds** (~2.2 µs/pixel). The
+depth study shows two bounces is enough for this scene — max
+luminance saturates at 0.737 after depth = 1.
+
+`examples/18_tiny_ray_tracer.jl` produces:
+- the basic scene as PPM and PNG,
+- a depth = 0..3 montage (showing the chrome sphere going from black
+  to fully reflective),
+- a three-angle camera orbit,
+- the luminance of the basic render so I can feed it back into the
+  rest of the pipeline.
+
+Concept note: `docs/concepts/16-ray-tracing.md`.
+
+## Differentiable filters
+
+What I built:
+
+- `AutoDiff` submodule. `kernel_loss(kernel_flat, img, target;
+  pad)` is the MSE between `correlate2d(img, K)` and `target`,
+  expecting a flat kernel vector. `kernel_gradient(...)` is one
+  call to `ForwardDiff.gradient`. `fit_kernel(img, target; ksize,
+  iterations, lr, pad, init)` runs vanilla SGD and returns the
+  learned kernel and the loss history.
+- New dep: `ForwardDiff`. Installed via `Pkg.add("ForwardDiff")`.
+
+The whole submodule rests on one observation: `correlate2d` is
+already type-generic (`where {T<:Real, K<:Real}`), and
+`ForwardDiff.Dual <: Real`, so the existing convolution code
+threads Dual numbers through the inner loop without any
+modification. No autodiff-specific kernel needed.
+
+Demo numbers (`examples/19_differentiable_filters.jl`, 800 SGD steps
+at `lr = 0.1`, starting from `0.1 .* randn(9)`):
+
+| target kernel | loss start | loss end | L∞ kernel error |
+|---------------|-----------:|---------:|----------------:|
+| Sobel-x       | 1.17       | 1.9e-12  | 2.5e-06         |
+| Sobel-y       | 1.02       | 1.1e-12  | 2.1e-06         |
+| Laplacian-4   | 1.73       | 5.4e-12  | 5.3e-06         |
+| Sharpen       | 2.71       | 7.1e-12  | 6.3e-06         |
+
+The learned Sobel-x prints out to four decimal places as exactly
+`[-1 0 1; -2 0 2; -1 0 1]`.
+
+One subtlety I documented in the concept note: training on a
+checkerboard fits the loss but recovers the wrong kernel, because
+only a few distinct 3×3 patches appear and the system is
+underdetermined. Uniform-noise training data makes every 3×3 patch
+unique and the kernel becomes fully observable. Same lesson that
+shows up in deep-learning data curation.
+
+Concept note: `docs/concepts/17-differentiable-filters.md`.
+
 ## Laplacian-pyramid image blending
 
 What I built:
@@ -412,10 +495,6 @@ Once the image core is mature, things I'd want to explore:
   comes from. A short notebook.
 - Anisotropic diffusion (Perona–Malik) — convolution-like but
   non-linear. Beautiful smoothing.
-- A tiny ray tracer to get me out of imaging and into rendering. The
-  MIT course goes here.
-- Differentiable filters with `Zygote` or `ForwardDiff` — preview of
-  where classical CV meets autodiff.
 - GPU acceleration of the naive kernel via `KernelAbstractions.jl`
   once the performance lab tells me it'd pay off.
 

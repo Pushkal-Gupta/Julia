@@ -19,4 +19,6 @@ using ImageLab
     include("test_viz_drawing.jl")
     include("test_io.jl")
     include("test_photos.jl")
+    include("test_raytracer.jl")
+    include("test_autodiff.jl")
 end

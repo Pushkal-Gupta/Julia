@@ -21,6 +21,8 @@ Submodules so far:
 - [`Viz`](@ref ImageLab.Viz)            — normalization, montage, line / point drawing helpers
 - [`PNM`](@ref ImageLab.PNM)            — Netpbm (PGM/PPM) readers and writers (pure-Julia, no deps)
 - [`Photos`](@ref ImageLab.Photos)      — PNG/JPG/TIFF via FileIO + ImageIO
+- [`RayTracer`](@ref ImageLab.RayTracer) — tiny Whitted-style ray tracer (spheres, planes, point lights, mirror reflection)
+- [`AutoDiff`](@ref ImageLab.AutoDiff)   — differentiable filters via ForwardDiff; learn kernels from input/target pairs
 
 Convention: images are `Matrix{<:Real}` with values in `[0, 1]` for floats or
 `[0, 255]` for `UInt8`. Row index = y (top → bottom), column index = x
@@ -42,6 +44,8 @@ include("linalg_view.jl")
 include("viz.jl")
 include("io.jl")
 include("photos.jl")
+include("raytracer.jl")
+include("autodiff.jl")
 
 using .Synth
 using .Kernels
@@ -56,7 +60,9 @@ using .LinAlgView
 using .Viz
 using .PNM
 using .Photos
+using .RayTracer
+using .AutoDiff
 
-export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos
+export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos, RayTracer, AutoDiff
 
 end # module ImageLab
