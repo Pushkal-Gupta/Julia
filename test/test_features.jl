@@ -38,6 +38,33 @@ using ImageLab.Synth, ImageLab.Edges, ImageLab.Features
     @testset "rejects bad sigma" begin
         @test_throws ArgumentError harris_response(rand(10, 10); sigma = -1.0)
     end
+
+    @testset "multiscale finds the rectangle's corners at level 0" begin
+        # Rectangle from (10, 12) to (30, 28) on a 48×48 canvas.
+        img = zeros(48, 48); img[10:30, 12:28] .= 1.0
+        results = multiscale_harris_corners(img; levels = 2,
+                                             sigma = 1.2,
+                                             threshold = 0.02,
+                                             min_distance = 4)
+        # Should find at least the four corners at level 0.
+        level0 = [(r.row, r.col) for r in results if r.level == 0]
+        @test length(level0) ≥ 4
+        for (ei, ej) in [(10, 12), (10, 28), (30, 12), (30, 28)]
+            @test any(max(abs(i - ei), abs(j - ej)) ≤ 3 for (i, j) in level0)
+        end
+        # Every result is tagged with a level in [0, levels].
+        @test all(0 ≤ r.level ≤ 2 for r in results)
+    end
+
+    @testset "multiscale levels map back to original-image coordinates" begin
+        img = zeros(64, 64); img[16:48, 16:48] .= 1.0
+        results = multiscale_harris_corners(img; levels = 2)
+        # Coordinates should stay inside the original image bounds.
+        for r in results
+            @test 1 ≤ r.row ≤ 64
+            @test 1 ≤ r.col ≤ 64
+        end
+    end
 end
 
 @testset "Hough lines" begin

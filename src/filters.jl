@@ -17,7 +17,7 @@ module Filters
 
 using ..Padding
 
-export median_filter, bilateral_filter, binary_dilate
+export median_filter, bilateral_filter, binary_dilate, perona_malik
 
 """
     median_filter(img; window=3, pad=:replicate) -> Matrix{Float64}
@@ -150,6 +150,89 @@ function binary_dilate(mask::BitMatrix; radius::Integer = 1)
         cur, nxt = nxt, cur
     end
     return cur
+end
+
+"""
+    perona_malik(img; iterations=20, K=0.10, lambda=0.20, mode=:exponential)
+        -> Matrix{Float64}
+
+Anisotropic diffusion — a non-linear PDE-based edge-preserving
+smoother. Linear heat diffusion `∂I/∂t = ∇²I` is equivalent to
+Gaussian smoothing (the solution at time `t` is the image convolved
+with a Gaussian of σ = √(2t)). The trouble with linear diffusion is
+that the Laplacian is largest exactly at edges, so edges blur
+*fastest*. Perona and Malik fixed this by making the conductivity
+depend on the local gradient:
+
+    ∂I/∂t = div( c(|∇I|) · ∇I )
+
+where `c(·)` is small where `|∇I|` is large. So smooth regions
+diffuse fast; edges almost don't.
+
+Discretization (explicit Euler on a 4-neighbor stencil):
+
+    I_{t+1}[i, j] = I_t[i, j] + λ · Σ_{N, S, E, W} c(|Δ_d|) · Δ_d
+
+where `Δ_d` is the directional difference (neighbor minus center).
+Stability of the explicit scheme requires `λ ≤ 1/4` (von Neumann
+analysis on the 4-neighbor discrete Laplacian).
+
+Parameters:
+
+- `iterations` — number of time steps. More = stronger smoothing.
+- `K` — the conduction "scale" in the diffusivity. Gradients much
+  smaller than `K` diffuse fully; gradients much larger than `K`
+  diffuse barely at all. Tune to the noise level (a bit above) vs.
+  the signal contrast (well below). For images in [0, 1] try
+  `K ≈ 0.05–0.20`.
+- `lambda` — the explicit time step. Stays ≤ 0.25 for stability.
+- `mode` — `:exponential` for `c(s) = exp(-(s/K)²)` (Perona & Malik's
+  first proposal — slightly favors strong edges) or `:rational` for
+  `c(s) = 1 / (1 + (s/K)²)` (their second — slightly favors wide
+  smooth regions).
+
+Boundary conditions: Neumann (zero-flux). Each pixel's missing
+out-of-image neighbor contributes zero to the update. This is the
+natural BC for diffusion, and corresponds to assuming the image
+extends with constant values past its edges.
+"""
+function perona_malik(img::AbstractMatrix{<:Real};
+                      iterations::Integer = 20,
+                      K::Real = 0.10,
+                      lambda::Real = 0.20,
+                      mode::Symbol = :exponential)
+    iterations ≥ 0 || throw(ArgumentError("iterations must be ≥ 0, got $iterations"))
+    K > 0 || throw(ArgumentError("K must be positive, got $K"))
+    lambda ≤ 0.25 || throw(ArgumentError(
+        "lambda must be ≤ 0.25 for explicit-scheme stability, got $lambda"))
+    mode in (:exponential, :rational) || throw(ArgumentError(
+        "mode must be :exponential or :rational, got :$mode"))
+
+    out = Float64.(img)
+    H, W = size(out)
+    nxt = similar(out)
+    K2 = K^2
+
+    @inbounds for _ in 1:iterations
+        for j in 1:W, i in 1:H
+            # Directional differences (Neumann BC: 0 at the image edge).
+            gN = (i > 1) ? out[i - 1, j] - out[i, j] : 0.0
+            gS = (i < H) ? out[i + 1, j] - out[i, j] : 0.0
+            gW = (j > 1) ? out[i, j - 1] - out[i, j] : 0.0
+            gE = (j < W) ? out[i, j + 1] - out[i, j] : 0.0
+            # Conductivity per direction.
+            if mode === :exponential
+                cN = exp(-gN^2 / K2); cS = exp(-gS^2 / K2)
+                cW = exp(-gW^2 / K2); cE = exp(-gE^2 / K2)
+            else  # :rational
+                cN = 1.0 / (1.0 + gN^2 / K2); cS = 1.0 / (1.0 + gS^2 / K2)
+                cW = 1.0 / (1.0 + gW^2 / K2); cE = 1.0 / (1.0 + gE^2 / K2)
+            end
+            nxt[i, j] = out[i, j] + lambda * (cN * gN + cS * gS + cW * gW + cE * gE)
+        end
+        out, nxt = nxt, out
+    end
+    return out
 end
 
 end # module Filters

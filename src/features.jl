@@ -16,8 +16,9 @@ using ..Padding
 using ..Kernels: gaussian1d
 using ..Convolution: separable_correlate2d
 using ..Edges: gradient
+using ..Pyramids: gaussian_pyramid
 
-export harris_response, harris_corners,
+export harris_response, harris_corners, multiscale_harris_corners,
        hough_lines, hough_peaks, HoughAccumulator,
        connected_components, component_sizes,
        normalized_cross_correlation, ncc_peaks
@@ -100,6 +101,48 @@ function harris_corners(img::AbstractMatrix{<:Real};
         ok && push!(keeps, (i, j))
     end
     return keeps
+end
+
+"""
+    multiscale_harris_corners(img; levels=3, sigma=1.0, k=0.04,
+                              threshold=0.02, min_distance=3, pad=:replicate)
+        -> Vector{NamedTuple{(:row, :col, :level), Tuple{Int, Int, Int}}}
+
+Run Harris on every level of a Gaussian pyramid and merge the
+detections, mapped back into the coordinates of the original image.
+
+Each entry is `(row, col, level)`. The `level` field says which
+pyramid level fired — `0` is the original, `1` is half-resolution,
+etc. A feature picked up at level `L` represents a corner that's
+roughly `2^L` pixels wide in the original image, so the level field
+is a coarse "scale" tag.
+
+The same Harris parameters (`sigma`, `k`, `threshold`,
+`min_distance`) are used on every level. `threshold` is relative to
+each level's max response, so the comparison across levels stays
+meaningful even if absolute response strengths drift.
+"""
+function multiscale_harris_corners(img::AbstractMatrix{<:Real};
+                                   levels::Integer = 3,
+                                   sigma::Real = 1.0,
+                                   k::Real = 0.04,
+                                   threshold::Real = 0.02,
+                                   min_distance::Integer = 3,
+                                   pad::Symbol = :replicate)
+    G = gaussian_pyramid(img; levels = levels, pad = pad)
+    out = NamedTuple{(:row, :col, :level), Tuple{Int, Int, Int}}[]
+    for (lvl, level_img) in enumerate(G)
+        # Skip levels too small to host a Harris window.
+        all(size(level_img) .≥ 2 * min_distance + 3) || continue
+        corners = harris_corners(level_img; sigma = sigma, k = k,
+                                 threshold = threshold,
+                                 min_distance = min_distance, pad = pad)
+        scale = 2^(lvl - 1)
+        for (i, j) in corners
+            push!(out, (row = i * scale, col = j * scale, level = lvl - 1))
+        end
+    end
+    return out
 end
 
 # ── Hough transform for lines ─────────────────────────────────────────────────

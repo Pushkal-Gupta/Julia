@@ -8,6 +8,7 @@ using ImageLab
     include("test_convolution.jl")
     include("test_separable.jl")
     include("test_performance.jl")
+    include("test_linalg_view.jl")
     include("test_viz.jl")
     include("test_edges.jl")
     include("test_canny.jl")
@@ -17,4 +18,5 @@ using ImageLab
     include("test_metrics.jl")
     include("test_viz_drawing.jl")
     include("test_io.jl")
+    include("test_photos.jl")
 end

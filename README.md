@@ -36,19 +36,25 @@ A small package at `src/ImageLab.jl` with these submodules:
   `canny` / `canny_stages` entry point that returns either the final
   edge map or every intermediate.
 - `Filters` — non-linear and edge-preserving smoothers: `median_filter`,
-  `bilateral_filter`, and `binary_dilate` for morphological tolerance
-  on edge masks.
+  `bilateral_filter`, `perona_malik` (anisotropic diffusion), and
+  `binary_dilate` for morphological tolerance on edge masks.
 - `Features` — Harris corner detector (`harris_response`,
-  `harris_corners`), Hough line transform (`hough_lines`,
-  `hough_peaks`, `HoughAccumulator`), connected component labeling
-  (`connected_components`, `component_sizes`), and normalized
-  cross-correlation template matching (`normalized_cross_correlation`,
-  `ncc_peaks`).
+  `harris_corners`, plus `multiscale_harris_corners` that runs
+  Harris on every level of a Gaussian pyramid), Hough line transform
+  (`hough_lines`, `hough_peaks`, `HoughAccumulator`), connected
+  component labeling (`connected_components`, `component_sizes`),
+  and normalized cross-correlation template matching
+  (`normalized_cross_correlation`, `ncc_peaks`).
 - `Pyramids` — Burt-Adelson Gaussian and Laplacian pyramids
   (`reduce_image`, `expand_image`, `gaussian_pyramid`,
-  `laplacian_pyramid`, `reconstruct_laplacian_pyramid`). The
-  Laplacian pyramid is an exact invertible multi-scale decomposition
-  — reconstruction matches the original to a single ULP.
+  `laplacian_pyramid`, `reconstruct_laplacian_pyramid`), and
+  `laplacian_blend(A, B, mask; levels)` for multi-band image
+  blending. Reconstruction matches the original to a single ULP.
+- `LinAlgView` — the linear-algebra view of convolution. Build the
+  Toeplitz / circulant convolution matrix (`toeplitz_conv_matrix`,
+  `circulant_conv_matrix`); the FFT diagonalization makes the
+  eigenvalues match the kernel's frequency response
+  (`circulant_eigenvalues`). For teaching, not performance.
 - `Metrics` — `edge_match_stats(predicted, gt; tolerance)` returns
   precision / recall / F1; `iou_score` for a single-number summary.
 - `Viz` — `normalize01`, `signed_to_gray` (for signed gradient images),
@@ -57,8 +63,11 @@ A small package at `src/ImageLab.jl` with these submodules:
   `label_to_gray` for colorizing connected-components output.
 - `PNM` — pure-Julia Netpbm (PGM/PPM) reader and writer. No external
   deps; opens in Preview on macOS.
+- `Photos` — PNG / TIFF / Netpbm I/O via `FileIO` + `ImageIO`.
+  `load_grayscale(path)` returns a `Matrix{Float64}` in `[0, 1]`;
+  `save_grayscale` and the RGB pair go the other way.
 
-Tests live in `test/` and currently pass 290. Run them with
+Tests live in `test/` and currently pass 374. Run them with
 `julia --project=. test/runtests.jl`.
 
 ## Quickstart
@@ -83,6 +92,11 @@ julia --project=. examples/09_corners_and_lines.jl
 julia --project=. examples/10_components_and_templates.jl
 julia --project=. examples/11_performance_lab.jl
 julia --project=. examples/12_pyramid_decomposition.jl
+julia --project=. examples/13_anisotropic_diffusion.jl
+julia --project=. examples/14_real_image_pipeline.jl   # or pass a PNG path
+julia --project=. examples/15_multiscale_harris.jl
+julia --project=. examples/16_laplacian_blending.jl
+julia --project=. examples/17_convolution_as_linear_algebra.jl
 open artifacts/
 ```
 
@@ -218,10 +232,93 @@ both directions and cancels.
 and Laplacian pyramid, shows them in a 2-row montage, and prints
 the reconstruction error.
 
-Next up: anisotropic diffusion (Perona–Malik, the non-linear
-smoothing companion to bilateral), then probably real-image I/O via
-`ImageIO` so I can run the whole pipeline on actual photos instead
-of just synthetic inputs.
+After pyramids came Perona-Malik anisotropic diffusion. It's a
+non-linear PDE-based smoother that solves the same problem as
+bilateral (linear smoothing wrecks edges) with a different
+intuition — replace the constant diffusivity in the heat equation
+with one that depends on the local gradient magnitude, so flat
+regions smooth fast and edges don't smooth at all. Discretized via
+explicit Euler on a 4-neighbor stencil, with `λ ≤ 1/4` for stability.
+
+`examples/13_anisotropic_diffusion.jl` runs it head-to-head against
+Gaussian and bilateral on a noisy image. With `K = 0.05` and 40
+iterations Perona-Malik ties bilateral at F1 = 0.962 (vs 0.955 for
+Gaussian σ=2 and 0.845 for raw Canny on the noisy input). With
+`K = 0.15` precision climbs to 1.000 but recall drops to 0.835 — the
+filter starts treating real edges as noise and smooths them away.
+The knob is explicit: above the right K you under-detect; below it
+you over-detect.
+
+Connecting to MIT-spirit territory: the line `linear diffusion =
+Gaussian smoothing at time t = σ²/2` is one of those one-equation
+results that ties spatial filtering to a time-evolving PDE. The
+concept doc walks through it.
+
+After diffusion came two pieces that connect the lab to the real
+world. First, a `Photos` submodule built on `FileIO` + `ImageIO`
+that loads PNG / TIFF / Netpbm into a `Matrix{Float64}` in `[0, 1]`
+and writes results back. `examples/14_real_image_pipeline.jl` runs
+the whole stack (Canny + Harris + Gaussian pyramid) on a real PNG —
+the script generates a synthetic sample if none is provided, but
+will happily take a real photo path on the command line.
+
+Second, `multiscale_harris_corners` — run Harris on every level of
+a Gaussian pyramid, tag each detection with the level it fired on,
+re-map coordinates back to the original. On a test image with a
+sharp small rectangle plus a larger soft-cornered one,
+single-scale Harris finds 5 corners (the sharp ones plus a noise
+dot); multi-scale finds 20 detections across 3 levels, the extras
+all sitting on the soft-rectangle corners that a 3×3 window at the
+original scale can't see.
+
+`examples/15_multiscale_harris.jl` runs the comparison and writes
+a 3-tile montage. The cost of multi-scale is only ~33% more than
+single-scale (geometric series: `1 + 1/4 + 1/16 + ... ≈ 4/3`).
+
+After multi-scale Harris I did the classical pyramid application:
+multi-band image blending. `Pyramids.laplacian_blend(A, B, mask)`
+takes two images and a mask, builds Laplacian pyramids of each
+image and a Gaussian pyramid of the mask, blends each level
+pointwise, and reconstructs. The result has no visible seam even
+when the mask is sharp — high frequencies blend with a sharp mask
+(detail survives), low frequencies blend with a heavily-smoothed
+mask (color transitions fade in over many pixels).
+
+`examples/16_laplacian_blending.jl` does the classic "left half
+from A, right half from B" demo plus a circular cut-and-paste. Two
+montage outputs make the difference between naive and pyramid
+blending obvious.
+
+After blending I did the linear-algebra view of convolution, which
+ties the FFT-conv path I had to the underlying matrix structure.
+`LinAlgView.toeplitz_conv_matrix(K, n)` and
+`circulant_conv_matrix(K, n)` materialize the matrix that
+convolution is implicitly multiplying by; both check out against
+`correlate1d` to within `1e-12`.
+
+The interesting part: `circulant_eigenvalues(K, n)` (which is just
+the FFT of the first row) returns the same set of values as
+`eigvals(C)` (the hard linear-algebra computation). They match to
+`2.22e-16` — machine epsilon. That's the DFT-diagonalizes-circulant
+theorem in code, which is also the result that makes
+FFT-convolution work.
+
+And the eigenvalues of an 11-tap Gaussian-smoothing circulant
+matrix at `n = 128` come out to `|λ|_DC = 1.0` (DC passes
+unchanged) and `|λ|_Nyquist = 0.0001` (highest frequency almost
+completely blocked) — which is exactly the frequency response of a
+strong low-pass filter, but read straight off the matrix's spectrum.
+
+`examples/17_convolution_as_linear_algebra.jl` prints the
+8×8 Toeplitz and circulant matrices, verifies the two
+eigenvalue computations, and saves the matrices as images so the
+band structure is visible.
+
+Next: probably the ray tracer — a small standalone module that
+makes Julia feel like a general-purpose tool, not just an
+image-processing one. Differentiable filters via ForwardDiff is
+also on the table; might combine both into one ambitious chunk
+since each is small.
 
 ## House rules
 
@@ -258,8 +355,10 @@ A few things I've decided up front so I don't drift:
 │   ├── features.jl
 │   ├── pyramids.jl
 │   ├── metrics.jl
+│   ├── linalg_view.jl
 │   ├── viz.jl
-│   └── io.jl
+│   ├── io.jl
+│   └── photos.jl
 ├── test/
 ├── examples/
 │   ├── 01_first_convolutions.jl
@@ -273,7 +372,12 @@ A few things I've decided up front so I don't drift:
 │   ├── 09_corners_and_lines.jl
 │   ├── 10_components_and_templates.jl
 │   ├── 11_performance_lab.jl
-│   └── 12_pyramid_decomposition.jl
+│   ├── 12_pyramid_decomposition.jl
+│   ├── 13_anisotropic_diffusion.jl
+│   ├── 14_real_image_pipeline.jl
+│   ├── 15_multiscale_harris.jl
+│   ├── 16_laplacian_blending.jl
+│   └── 17_convolution_as_linear_algebra.jl
 ├── docs/concepts/
 └── artifacts/      # generated PGMs, gitignored except .gitkeep
 ```

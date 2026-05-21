@@ -19,7 +19,14 @@ Roughly:
 - Features (Harris, Hough, connected components, template match) — done
 - Performance lab (BenchmarkTools, inline conv, FFT crossover) — done
 - Image pyramids and scale-space basics — done
-- Anisotropic diffusion (Perona–Malik) — next
+- Anisotropic diffusion (Perona–Malik) — done
+- Real-image I/O via ImageIO + a natural-image pipeline demo — done
+- Multi-scale Harris on the Gaussian pyramid — done
+- Laplacian-pyramid image blending — done
+- Linear-algebra view of convolution (Toeplitz / circulant matrices,
+  DFT diagonalization) — done
+- Next: tiny ray tracer for Julia practice outside imaging, then
+  differentiable filters via ForwardDiff
 - Performance lab (benchmarks, FFT crossover, `@code_warntype`) — folded
   in as needed; a real pass once Canny is solid
 - Features (Harris, Hough, connected components, template matching) —
@@ -259,6 +266,119 @@ Pluto notebook with sliders for σ, kernel size, thresholds, denoiser
 choice, operator choice — one knob per question I keep asking the
 static example scripts. Pluto is the path of least friction on Julia
 1.11; if I find it slow I'll try a Makie window instead.
+
+## Anisotropic diffusion
+
+What I built:
+
+- `perona_malik(img; iterations, K, lambda, mode)` in `Filters`.
+  Non-linear PDE-based smoother. Each iteration does an explicit
+  Euler step of `∂I/∂t = div(c(|∇I|) · ∇I)` on a 4-neighbor
+  stencil, with Neumann boundary conditions (zero flux at the image
+  edge). `lambda` must stay ≤ 1/4 for stability (von Neumann
+  analysis on the discrete Laplacian).
+- Two conduction functions in `mode`: `:exponential` for
+  `c(s) = exp(-(s/K)²)` and `:rational` for `c(s) = 1/(1 + (s/K)²)`,
+  both from the original 1990 paper.
+- `examples/13_anisotropic_diffusion.jl` compares against Gaussian
+  and bilateral on a noisy image, with F1 scores against the clean-
+  image Canny.
+
+The result table:
+
+| smoother              | F1    | notes                               |
+|-----------------------|-------|-------------------------------------|
+| raw (no smooth)       | 0.845 | recall 0.995, precision 0.734 — noisy edges everywhere |
+| Gaussian σ=2          | 0.955 |                                     |
+| bilateral             | 0.962 |                                     |
+| PM exp K=0.05         | 0.962 | matches bilateral                   |
+| PM exp K=0.15         | 0.910 | precision 1.000, recall 0.835 — K too big |
+| PM rational K=0.10    | 0.910 | same story                          |
+
+The K parameter is the knob: too small under-smooths (noise edges
+survive), too big over-smooths (real edges look like noise). With
+the right K the algorithm matches bilateral exactly in F1.
+
+Concept note: `docs/concepts/11-anisotropic-diffusion.md`.
+
+## Linear-algebra view of convolution
+
+What I built:
+
+- `LinAlgView.toeplitz_conv_matrix(K, n)` — the `n × n` matrix that
+  represents 1D `:zero`-padded correlation as `M · v`. Banded, Toeplitz
+  (constant along each diagonal).
+- `LinAlgView.circulant_conv_matrix(K, n)` — same for `:circular`
+  padding. The band wraps around at the corners, making the matrix
+  circulant.
+- `LinAlgView.circulant_eigenvalues(K, n)` — the eigenvalues of the
+  circulant matrix, computed as the DFT of its first row. They equal
+  `eigvals(C)` to machine epsilon (`2.22e-16` measured). This is the
+  DFT-diagonalizes-circulant theorem made executable.
+
+Two payoff results from the studio script:
+
+- For an 8×8 [1, 2, 1]/4 smoother, the eigenvalues are
+  `[1.000, 0.854, 0.854, 0.500, 0.500, 0.146, 0.146, 0.000]` — a
+  perfectly visible low-pass profile from DC to Nyquist.
+- For an 11-tap Gaussian-smoothing matrix at `n = 128`, the DC
+  eigenvalue is `1.000` and the Nyquist eigenvalue is `0.0001`. The
+  filter's "frequency response" is its operator's spectrum.
+
+For teaching, not performance — materializing the matrix is
+`O(n²)`. Concept note: `docs/concepts/15-conv-as-linear-algebra.md`.
+
+## Laplacian-pyramid image blending
+
+What I built:
+
+- `laplacian_blend(A, B, mask; levels, pad)` in `Pyramids`. Builds
+  Laplacian pyramids of `A` and `B`, a Gaussian pyramid of the
+  mask, blends each level pointwise as `G_M[k] · L_A[k] + (1 − G_M[k])
+  · L_B[k]`, and reconstructs via the exact-inverse path. Different
+  frequency bands get blended with different mask smoothness — high
+  frequencies with a sharp mask (detail preserved), low frequencies
+  with a smoothed mask (color transition over many pixels).
+- `examples/16_laplacian_blending.jl` shows two demos: a vertical
+  split (sharp seam) and a circular cutout. Naive linear blending
+  produces visible seams; the pyramid blend hides them.
+
+The transition width scales roughly as `3 × 2^levels` pixels — at
+`levels = 5` on a 128×128 image, the seam fades over ~96 pixels.
+
+Concept note: `docs/concepts/14-laplacian-blending.md`.
+
+## Real-image I/O
+
+- `Photos.load_grayscale(path)` → `Matrix{Float64}` in `[0, 1]`.
+  Color inputs collapse via the standard luminance formula.
+- `Photos.save_grayscale(path, img)` writes PNG / TIFF / PGM, chosen
+  by extension. Values get clamped to `[0, 1]` and quantized to 8-bit.
+- `Photos.load_rgb_planes` / `Photos.save_rgb_planes` for color
+  workflows.
+- `examples/14_real_image_pipeline.jl` runs Canny, Harris, and a
+  Gaussian pyramid on a PNG (real or synthesized). With a path
+  argument it processes whatever I throw at it.
+- `PNM` (the pure-Julia Netpbm one) stays around as the pedagogical
+  version — `Photos` is the practical one.
+- Concept note: `docs/concepts/12-real-image-io.md`.
+
+## Multi-scale Harris
+
+- `multiscale_harris_corners(img; levels, sigma, k, threshold,
+  min_distance)` in `Features`. Runs Harris on every level of a
+  Gaussian pyramid and re-maps detections back to the original
+  image's coordinates. Each detection comes tagged with the level
+  it fired on (`level = 0` is the original).
+- Same Harris parameters at every level; threshold is fraction-of-max
+  per level, so the comparison stays meaningful.
+- Total cost across L levels is bounded by `4/3 × H × W` — only ~33%
+  more than single-scale.
+- `examples/15_multiscale_harris.jl` compares single vs multi-scale
+  on a mixed-scale test image. Single-scale finds 5 corners
+  (the sharp ones); multi-scale finds 20 across 3 levels, with the
+  extras correctly sitting on softer larger-scale features.
+- Concept note: `docs/concepts/13-multiscale-harris.md`.
 
 ## Image pyramids
 

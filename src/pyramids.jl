@@ -23,7 +23,8 @@ module Pyramids
 using ..Convolution: separable_correlate2d
 
 export reduce_image, expand_image,
-       gaussian_pyramid, laplacian_pyramid, reconstruct_laplacian_pyramid
+       gaussian_pyramid, laplacian_pyramid, reconstruct_laplacian_pyramid,
+       laplacian_blend
 
 # The standard Burt-Adelson binomial filter. Approximates a Gaussian
 # with σ ≈ 1.0 over a 5-tap window. Sums to 1; outer product with
@@ -144,6 +145,55 @@ function reconstruct_laplacian_pyramid(L::AbstractVector{<:AbstractMatrix{<:Real
         current = expand_image(current, size(L[k]); pad = pad) .+ Float64.(L[k])
     end
     return current
+end
+
+"""
+    laplacian_blend(A, B, mask; levels=4, pad=:replicate) -> Matrix{Float64}
+
+Multi-band image blending via the Laplacian pyramid — the classical
+application that motivated the pyramid algorithm in 1983.
+
+Direct linear blending `A · mask + B · (1 − mask)` produces a visible
+seam wherever the mask transitions sharply, because high-frequency
+content from one image meets high-frequency content from the other at
+the same pixel. Multi-band blending fixes this by blending each
+*frequency band* at its own *spatial scale*: high frequencies get
+blended with a sharp mask (so detail isn't smoothed out), low
+frequencies get blended with a heavily-smoothed mask (so color shifts
+fade in over many pixels).
+
+The trick is that a Laplacian pyramid is precisely a frequency-band
+decomposition, and a Gaussian pyramid of the mask gives the same
+mask at every scale. Blending pyramids level-by-level with their
+matched mask scales, then reconstructing, gives a seam-free composite.
+
+Arguments:
+
+- `A`, `B`     — the two images, same size.
+- `mask`       — same size as A/B, values in `[0, 1]`. `1` means
+                  "take from A", `0` means "take from B".
+- `levels`     — how many pyramid levels to use. More levels = smoother
+                  blend over a wider transition region.
+- `pad`        — forwarded to the pyramid construction.
+"""
+function laplacian_blend(A::AbstractMatrix{<:Real},
+                         B::AbstractMatrix{<:Real},
+                         mask::AbstractMatrix{<:Real};
+                         levels::Integer = 4,
+                         pad::Symbol = :replicate)
+    size(A) == size(B) == size(mask) || throw(DimensionMismatch(
+        "A, B, and mask must share size; got $(size(A)), $(size(B)), $(size(mask))"))
+
+    LA = laplacian_pyramid(A;    levels = levels, pad = pad)
+    LB = laplacian_pyramid(B;    levels = levels, pad = pad)
+    GM = gaussian_pyramid(mask;  levels = levels, pad = pad)
+
+    blended = Vector{Matrix{Float64}}(undef, length(LA))
+    for k in eachindex(blended)
+        m = Float64.(GM[k])
+        blended[k] = m .* Float64.(LA[k]) .+ (1 .- m) .* Float64.(LB[k])
+    end
+    return reconstruct_laplacian_pyramid(blended; pad = pad)
 end
 
 end # module Pyramids

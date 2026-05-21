@@ -17,8 +17,10 @@ Submodules so far:
 - [`Features`](@ref ImageLab.Features)  — Harris corners, Hough lines, connected components, NCC template match
 - [`Pyramids`](@ref ImageLab.Pyramids)  — Gaussian and Laplacian pyramids (Burt-Adelson), perfect reconstruction
 - [`Metrics`](@ref ImageLab.Metrics)    — precision / recall / F1, IoU for comparing edge maps
+- [`LinAlgView`](@ref ImageLab.LinAlgView) — convolution as Toeplitz / circulant matrices; DFT diagonalization
 - [`Viz`](@ref ImageLab.Viz)            — normalization, montage, line / point drawing helpers
-- [`PNM`](@ref ImageLab.PNM)            — Netpbm (PGM/PPM) readers and writers
+- [`PNM`](@ref ImageLab.PNM)            — Netpbm (PGM/PPM) readers and writers (pure-Julia, no deps)
+- [`Photos`](@ref ImageLab.Photos)      — PNG/JPG/TIFF via FileIO + ImageIO
 
 Convention: images are `Matrix{<:Real}` with values in `[0, 1]` for floats or
 `[0, 255]` for `UInt8`. Row index = y (top → bottom), column index = x
@@ -33,11 +35,13 @@ include("padding.jl")
 include("convolution.jl")
 include("edges.jl")
 include("filters.jl")
-include("features.jl")
 include("pyramids.jl")
+include("features.jl")
 include("metrics.jl")
+include("linalg_view.jl")
 include("viz.jl")
 include("io.jl")
+include("photos.jl")
 
 using .Synth
 using .Kernels
@@ -45,12 +49,14 @@ using .Padding
 using .Convolution
 using .Edges
 using .Filters
-using .Features
 using .Pyramids
+using .Features
 using .Metrics
+using .LinAlgView
 using .Viz
 using .PNM
+using .Photos
 
-export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, Viz, PNM
+export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos
 
 end # module ImageLab

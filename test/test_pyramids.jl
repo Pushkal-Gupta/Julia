@@ -82,4 +82,52 @@ using ImageLab.Synth, ImageLab.Pyramids
         @test_throws ArgumentError gaussian_pyramid(rand(8, 8); levels = -1)
         @test_throws ArgumentError expand_image(rand(4, 4), (0, 8))
     end
+
+    @testset "laplacian_blend with all-ones mask returns A" begin
+        A = rand(64, 64)
+        B = rand(64, 64)
+        mask = ones(64, 64)
+        out = laplacian_blend(A, B, mask; levels = 3)
+        @test maximum(abs.(out .- A)) < 1e-10
+    end
+
+    @testset "laplacian_blend with all-zeros mask returns B" begin
+        A = rand(64, 64)
+        B = rand(64, 64)
+        mask = zeros(64, 64)
+        out = laplacian_blend(A, B, mask; levels = 3)
+        @test maximum(abs.(out .- B)) < 1e-10
+    end
+
+    @testset "laplacian_blend gives the input far from the seam" begin
+        # Mask = 1 on the left half, 0 on the right. Pixels far from the
+        # boundary should match A on the left and B on the right exactly
+        # (in the interior of the pyramid's smoothing radius).
+        A = fill(0.8, 64, 64)
+        B = fill(0.2, 64, 64)
+        mask = zeros(64, 64); mask[:, 1:32] .= 1.0
+        out = laplacian_blend(A, B, mask; levels = 3)
+        # The left edge far from the seam should be close to A's value;
+        # the right edge far from the seam close to B's. Both within a
+        # small tolerance reflecting the pyramid's interior bandwidth.
+        @test maximum(abs.(out[:, 1:10]  .- 0.8)) < 0.05
+        @test maximum(abs.(out[:, 55:64] .- 0.2)) < 0.05
+    end
+
+    @testset "laplacian_blend smooths a sharp mask edge" begin
+        # The naive `A * mask + B * (1-mask)` would jump from 0.8 to 0.2
+        # in one pixel at the seam. The pyramid blend should produce a
+        # gradual ramp over many pixels.
+        A = fill(0.8, 64, 64)
+        B = fill(0.2, 64, 64)
+        mask = zeros(64, 64); mask[:, 1:32] .= 1.0
+        out = laplacian_blend(A, B, mask; levels = 3)
+        # Walk across the middle row and check we don't jump in a single pixel.
+        deltas = diff(out[32, :])
+        @test maximum(abs.(deltas)) < 0.15   # no single-pixel jump greater than 0.15
+    end
+
+    @testset "laplacian_blend rejects mismatched sizes" begin
+        @test_throws DimensionMismatch laplacian_blend(rand(8, 8), rand(8, 10), rand(8, 8))
+    end
 end
