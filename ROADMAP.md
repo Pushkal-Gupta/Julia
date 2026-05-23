@@ -6,10 +6,9 @@ worth recording mid-build I jot it down here. Nothing is on a schedule.
 
 ## Where I'm at
 
-Engine, depth, edges, Canny, noise study, and the features layer are
-done. Next is the performance lab.
+All the committed chunks are done. 1485 tests passing.
 
-Roughly:
+Chunk-by-chunk:
 
 - Convolution engine — done
 - Convolution depth (1D, separable, factor_separable) — done
@@ -28,15 +27,21 @@ Roughly:
 - Tiny ray tracer (Whitted-style, spheres + planes + mirror
   reflection) — done
 - Differentiable filters via ForwardDiff (autodiff on the classical
-  convolution operators; learn Sobel/Laplacian/sharpen from
+  convolution operators; learn Sobel / Laplacian / sharpen from
   input-target pairs) — done
-- Performance lab (benchmarks, FFT crossover, `@code_warntype`) — folded
-  in as needed; a real pass once Canny is solid
-- Features (Harris, Hough, connected components, template matching) —
-  later
-- Interactive playground (Pluto or a small Makie app) — later
-- Stretch: linear-algebra view of convolution, image diffusion, a tiny
-  ray tracer, differentiable filters
+- Optical flow (Lucas-Kanade with 2×2 structure-tensor solve;
+  HSV colour-wheel visualization) — done
+- Pyramidal Lucas-Kanade (coarse-to-fine with bilinear image
+  warping; handles motions of several pixels where plain LK
+  overshoots) — done
+- Horn-Schunck dense flow (global smoothness prior, Jacobi
+  iteration on the HS weighted Laplacian; fills in flow in
+  textureless regions where LK has nothing to solve) — done
+
+Open ideas in the "Stretch" section at the bottom of this file:
+pyramidal Horn-Schunck, interactive playground (Pluto / Makie),
+GPU via KernelAbstractions, image registration / homography,
+differentiable Canny.
 
 ## The convolution engine
 
@@ -411,6 +416,124 @@ shows up in deep-learning data curation.
 
 Concept note: `docs/concepts/17-differentiable-filters.md`.
 
+## Optical flow (Lucas-Kanade)
+
+What I built:
+
+- `Flow` submodule. `lucas_kanade(frame1, frame2; window_size,
+  sigma, det_threshold)` returns a `FlowField` with `u`, `v`, and
+  `confidence` matrices. Solves the 2×2 LK normal equations per
+  pixel via Cramer's rule after building five Gaussian-windowed
+  pointwise products of `Iₓ`, `I_y`, `I_t`.
+- The spatial gradients come from Sobel-on-the-frame-average,
+  *divided by 8* — Sobel's coefficient sum. Without that
+  normalization `u` ends up off by a factor of `1/8` because
+  `Σ Iₓ²` and `Σ Iₓ·I_t` pick up different powers of the Sobel
+  scale.
+- `Viz.hsv_to_rgb(h, s, v)` — standalone HSV conversion, doesn't
+  pull in `ColorTypes`. Works on plain `Float64`.
+- `Viz.flow_to_rgb(u, v; max_mag)` — standard colour-wheel flow
+  visualization. Hue = direction, saturation = magnitude clamped to
+  `max_mag`, value = 1. Returns three `Matrix{Float64}` channels so
+  the existing `PNM.save_ppm` and `Photos.save_rgb_planes` writers
+  pick them up unchanged.
+
+Measured results on `examples/20_optical_flow.jl`:
+
+| input motion              | recovered                | error |
+|---------------------------|--------------------------|-------|
+| translation (0.7, 0.3)    | (0.719, 0.310)           | 3%    |
+| rotation 1° around centre | (±0.80, ±0.80) at edges  | ~5%   |
+| 2-pixel translation       | u ≈ 2.3 (bias visible)   | 15%   |
+
+The bias for the 2-pixel case is the OFC linearization breaking
+down — exactly what pyramidal LK exists to fix. The confidence
+map (structure-tensor determinant) is ~5 orders of magnitude
+larger in textured regions than in flat ones, which makes it a
+clean mask for the "I don't know" pixels.
+
+Same `[a b; b d]` structure tensor that drives Harris corners — a
+satisfying repetition. Pixels where LK has two strong eigenvalues
+are corners; pixels where it has one or zero are edges or flats.
+
+Concept note: `docs/concepts/18-optical-flow.md`.
+
+## Pyramidal Lucas-Kanade
+
+What I built:
+
+- `Flow.warp_bilinear(img, u, v)` — inverse-warp `img` by the
+  per-pixel flow field with four-tap bilinear interpolation.
+  Out-of-bounds samples clamp to the edge. Sanity test: if
+  `lucas_kanade(I₁, I₂) = (u, v)`, then `warp_bilinear(I₂, u, v) ≈
+  I₁`.
+- `Flow.lucas_kanade_pyramid(img1, img2; levels, window_size,
+  sigma, iters_per_level, pad, det_threshold)`. Coarse-to-fine
+  driver: builds Gaussian pyramids of both frames, runs LK at the
+  coarsest level, upsamples the estimate (and doubles its
+  magnitude — one pixel at level `k` is two at level `k-1`), warps
+  frame 2 at the next-finer level by the current estimate, runs LK
+  on the residual, repeats. Iterates within each level
+  (`iters_per_level` default 3) for Newton-style refinement.
+
+Headline measurement on a (4, -2.5)-pixel translation of the
+sinusoid demo pattern:
+
+| algorithm                | recovered (u, v)       | error |
+|--------------------------|------------------------|-------|
+| plain LK                 | (+3.995, -2.829)       | 13% on v |
+| pyramidal LK             | (+4.001, -2.495)       | 0.2% on both |
+| mean per-pixel residual `\|warp(I₂, flow) − I₁\|` after pyramidal | 0.0004 | — |
+
+The level-by-level traces show what the algorithm is doing: at
+the coarsest 8×8 level the pattern is too smoothed for LK to see
+motion, so the flow stays at zero; the texture appears at the
+32×32 level and the estimate climbs through 1.5 → 2.6 → 5.0 over
+the next three doublings, settling on 4.0 once the borders are
+excluded.
+
+Cost: roughly 20× plain LK (5 pyramid levels × 3 refinement
+iterations + pyramid build + warps), but it works on motions
+plain LK can't touch.
+
+Concept note: `docs/concepts/19-pyramidal-lucas-kanade.md`.
+
+## Horn-Schunck dense optical flow
+
+What I built:
+
+- `Flow.horn_schunck(img1, img2; alpha = 0.1, iterations = 200,
+  pad = :replicate)`. Jacobi iteration on the Horn-Schunck
+  variational formulation: per-pixel update
+  `u ← ū − Iₓ · (Iₓ·ū + I_y·v̄ + I_t) / (α² + Iₓ² + I_y²)`
+  (and symmetrically for `v`), where `ū`, `v̄` are 4-neighbour-at-1/6
+  / diagonal-at-1/12 weighted averages.
+- Shares the gradient recipe (Sobel/8 on the frame average) with
+  `lucas_kanade` so the two algorithms are directly comparable on
+  the same inputs.
+- The `confidence` field on the returned `FlowField` is the
+  squared OFC residual per pixel, not the LK structure-tensor
+  determinant. Different quantity, same role of flagging where
+  the flow disagrees with the data.
+
+Headline contrast on the textured-patch-in-flat-field demo input:
+
+| algorithm | inside patch (true 0.5) | flat region (no constraint) |
+|-----------|------------------------:|----------------------------:|
+| LK        | +0.514                  | +0.000  (no texture → no constraint → 0) |
+| HS        | +0.507                  | +0.268  (diffused outward) |
+
+The `α` sweep shows the data-vs-smoothness tradeoff cleanly:
+
+| α    | recovered (u, v) on (0.5, 0.3) | comment |
+|------|-------------------------------:|---------|
+| 0.05 | (+0.515, +0.309)               | matches LK |
+| 0.10 | (+0.515, +0.309)               | default; matches LK |
+| 0.50 | (+0.496, +0.298)               | mildly smoothed |
+| 2.00 | (+0.108, +0.065)               | smoothness dominates |
+
+Concept note: `docs/concepts/20-horn-schunck.md`.
+
 ## Laplacian-pyramid image blending
 
 What I built:
@@ -488,15 +611,35 @@ Concept note: `docs/concepts/10-pyramids.md`.
 
 ## Stretch
 
-Once the image core is mature, things I'd want to explore:
+The committed chunks (above) are all in. The list below is what I'd
+pick up next if I keep going on this repo.
 
-- The linear-algebra view: convolution as a doubly block circulant
-  matrix; the DFT diagonalizes it; that's where FFT-based convolution
-  comes from. A short notebook.
-- Anisotropic diffusion (Perona–Malik) — convolution-like but
-  non-linear. Beautiful smoothing.
-- GPU acceleration of the naive kernel via `KernelAbstractions.jl`
-  once the performance lab tells me it'd pay off.
+- **Pyramidal Horn-Schunck**. The coarse-to-fine driver I wrote
+  for LK is algorithm-agnostic. Wrap it around `horn_schunck`
+  instead of `lucas_kanade` and HS gets the same big-motion fix.
+  Small chunk, would make a nice bookend to the optical-flow
+  thread.
+- **Differentiable Canny**. Now that `AutoDiff` works, I could
+  replace the discrete steps in Canny (NMS, double threshold,
+  hysteresis) with smooth approximations — softmax-weighted NMS,
+  sigmoid thresholds, dilation-based hysteresis — and joint-optimize
+  `(σ, low, high, smoothing kernel)` against an edge ground truth.
+  Bigger chunk than the basic `AutoDiff` because every stage of
+  Canny needs a smooth counterpart.
+- **Image registration / homographies**. Estimate a 2D affine or
+  projective transform between two images. Builds on optical flow.
+  Useful for the panorama-stitching demo that I keep almost-doing.
+- **Interactive playground in Pluto**. Sliders for `σ`, kernel size,
+  thresholds, denoiser choice, operator choice — one knob per
+  question I keep asking the static example scripts.
+- **GPU acceleration via `KernelAbstractions.jl`**. The
+  performance lab measurements suggest the naive 2D kernel is
+  arithmetic-bound, which is the case GPUs do well on. Would need
+  a Metal.jl or CUDA.jl backend depending on the machine.
+- **Color image processing**. The convolution / edge / filter
+  pipeline is grayscale-only. A `Color` submodule with channel-wise
+  convolution, color-space conversion (RGB ↔ HSV ↔ Lab), and
+  per-channel edge detection would round out the basics.
 
 ## References
 

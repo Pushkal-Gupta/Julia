@@ -23,6 +23,7 @@ Submodules so far:
 - [`Photos`](@ref ImageLab.Photos)      — PNG/JPG/TIFF via FileIO + ImageIO
 - [`RayTracer`](@ref ImageLab.RayTracer) — tiny Whitted-style ray tracer (spheres, planes, point lights, mirror reflection)
 - [`AutoDiff`](@ref ImageLab.AutoDiff)   — differentiable filters via ForwardDiff; learn kernels from input/target pairs
+- [`Flow`](@ref ImageLab.Flow)           — Lucas-Kanade optical flow between two frames (per-pixel `(u, v)` displacement)
 
 Convention: images are `Matrix{<:Real}` with values in `[0, 1]` for floats or
 `[0, 255]` for `UInt8`. Row index = y (top → bottom), column index = x
@@ -46,6 +47,7 @@ include("io.jl")
 include("photos.jl")
 include("raytracer.jl")
 include("autodiff.jl")
+include("flow.jl")
 
 using .Synth
 using .Kernels
@@ -62,7 +64,8 @@ using .PNM
 using .Photos
 using .RayTracer
 using .AutoDiff
+using .Flow
 
-export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos, RayTracer, AutoDiff
+export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos, RayTracer, AutoDiff, Flow
 
 end # module ImageLab

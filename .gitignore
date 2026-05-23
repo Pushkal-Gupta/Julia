@@ -19,3 +19,10 @@ artifacts/*
 
 # Pluto notebook caches
 *.pluto_state
+
+# Local-only tooling / editor config
+.claude/
+.aider*
+.cursor/
+.copilot/
+.github/copilot/

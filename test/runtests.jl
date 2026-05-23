@@ -21,4 +21,5 @@ using ImageLab
     include("test_photos.jl")
     include("test_raytracer.jl")
     include("test_autodiff.jl")
+    include("test_flow.jl")
 end

@@ -1,10 +1,17 @@
 # ImageLab
 
 I'm using this repo to learn Julia properly — by building image-processing
-operators from scratch and seeing what they do. Convolution, edge
-detection, eventually a from-scratch Canny, and after that wherever this
-takes me (image diffusion, a tiny ray tracer, maybe a webcam edge
-detector — see `ROADMAP.md`).
+operators from scratch and seeing what they do. The trajectory so far:
+naive convolution → six padding modes → 1D / separable convolution →
+edge detection (first and second order) → Canny from scratch → noise
+study → Harris / Hough / connected components / NCC → performance lab
+with FFT-based convolution → Gaussian and Laplacian pyramids →
+anisotropic diffusion → real-image I/O → multi-scale Harris →
+multi-band image blending → convolution as Toeplitz / circulant matrices
+→ a tiny Whitted-style ray tracer → differentiable filters via
+ForwardDiff → Lucas-Kanade optical flow → pyramidal LK for big
+motions → Horn-Schunck dense flow. See `ROADMAP.md` for the
+chunk-by-chunk breakdown and `docs/concepts/` for the writeups.
 
 The rule I keep coming back to: write the naive version, prove it works
 with tests, look at the output as an actual image, *then* think about
@@ -74,8 +81,19 @@ A small package at `src/ImageLab.jl` with these submodules:
   `correlate2d` happens to be type-generic, so `Dual`-valued
   kernels just work; on top of that I built `kernel_loss`,
   `kernel_gradient`, and a tiny SGD loop in `fit_kernel`.
+- `Flow` — Optical flow between two frames. `lucas_kanade` solves
+  the 2×2 normal equations per pixel for sub-pixel motions;
+  `lucas_kanade_pyramid` is the coarse-to-fine variant that
+  handles motions of several pixels by walking a Gaussian pyramid
+  and warping at each level. `horn_schunck` is the dense
+  global-smoothness alternative — Jacobi iteration on the
+  Horn-Schunck weighted Laplacian, fills in flow in textureless
+  regions by diffusion. `warp_bilinear` does inverse-warping with
+  edge-clamped four-tap bilinear interpolation. Visualization via
+  `Viz.flow_to_rgb` using the standard hue-direction /
+  saturation-magnitude colour-wheel convention.
 
-Tests live in `test/` and currently pass 432. Run them with
+Tests live in `test/` and currently pass 1485. Run them with
 `julia --project=. test/runtests.jl`.
 
 ## Quickstart
@@ -107,6 +125,9 @@ julia --project=. examples/16_laplacian_blending.jl
 julia --project=. examples/17_convolution_as_linear_algebra.jl
 julia --project=. examples/18_tiny_ray_tracer.jl
 julia --project=. examples/19_differentiable_filters.jl
+julia --project=. examples/20_optical_flow.jl
+julia --project=. examples/21_pyramidal_optical_flow.jl
+julia --project=. examples/22_horn_schunck.jl
 open artifacts/
 ```
 
@@ -375,9 +396,105 @@ lesson that haunts deep-learning data preparation.
 
 That bridges classical CV (write the kernel) and modern CV (learn
 it) through one ~100-line submodule and the exact same convolution
-code I wrote on day one. Whichever direction I take this repo next,
-that connection feels like the right place to stop the linear
-trajectory.
+code I wrote on day one.
+
+Then I picked up optical flow. The output isn't a single grayscale
+matrix any more — it's a 2D vector field with one `(u, v)` per
+pixel — so this is also the first chunk in the repo where I had to
+think about how to visualize something that isn't a single
+intensity. `Flow.lucas_kanade(frame1, frame2)` solves the classical
+1981 LK setup: per-pixel brightness constancy gives the optical-flow
+constraint `Iₓ·u + I_y·v + I_t = 0` (one equation, two unknowns,
+underdetermined), and the LK assumption that motion is constant in a
+small window turns that into an overdetermined least-squares system
+solved via the 2×2 normal equations.
+
+The structure tensor on the left of those normal equations is
+*exactly* the same matrix Harris uses for corners. That's not a
+coincidence — Harris fires where two independent motion directions
+constrain the system, which is the exact condition for LK to be
+well-conditioned. The `Flow.FlowField` return value carries the
+structure-tensor determinant as a `confidence` channel for masking
+the no-texture pixels.
+
+For visualization I added `Viz.hsv_to_rgb` and `Viz.flow_to_rgb`,
+which encode flow with the standard colour-wheel convention
+(hue = direction, saturation = magnitude, value = 1). The colour
+wheel image the example writes out is the legend.
+
+Numbers from `examples/20_optical_flow.jl`: a known continuous
+translation of (0.7, 0.3) pixels recovers as (0.719, 0.310) — 3%
+error. A 1° rotation around the image centre recovers within ~5%.
+The confidence in a textured patch is ~5 orders of magnitude
+larger than in a flat background.
+
+The biggest known limitation of plain LK: it linearizes the OFC,
+so it's accurate only for sub-pixel motions. A 2-pixel shift
+recovers `u ≈ 2.3` — visible bias. The classical fix is pyramidal
+LK.
+
+So the next chunk was exactly that. `Pyramids` was already there;
+the new pieces were `warp_bilinear(img, u, v)` (inverse-warp with
+bilinear interpolation, four-tap, edge-clamped) and
+`lucas_kanade_pyramid` itself — coarse-to-fine driver that walks
+the Gaussian pyramid from the coarsest level to the finest,
+warping frame 2 by the current estimate at each level and adding
+the residual flow LK finds on the warped pair.
+
+The numbers are the satisfying part. On a (4, -2.5)-pixel
+translation of the same sinusoid the plain LK demo used:
+
+```
+plain LK:    recovered (u, v) = (+3.995, -2.829)   # v overshoots by 13%
+pyramid LK:  recovered (u, v) = (+4.001, -2.495)   # both within 0.2%
+```
+
+And the level-by-level convergence traces out exactly what the
+algorithm is supposed to do — flow accumulates from 0 at the
+coarsest level (8×8, pattern smoothed away) up to ~4, -2.5 at the
+finest (128×128). The mean per-pixel residual `|warp(I₂, flow) −
+I₁|` is `0.0004` on a `[0, 1]` image, which means the recovered
+flow reconstructs frame 1 to within four parts per ten thousand.
+
+`examples/21_pyramidal_optical_flow.jl` saves the per-level
+snapshots, a plain-vs-pyramid side-by-side, and the warp-residual
+image. Concept note: `docs/concepts/19-pyramidal-lucas-kanade.md`.
+
+Then I went sideways and built Horn-Schunck — the contemporary
+1981 alternative to LK and the standard worked example of "local
+vs global formulation" in CV. Same `Iₓ`, `I_y`, `I_t` ingredients
+as LK, completely different regularization: instead of windowing
+the OFC into a local least-squares solve, HS minimizes a global
+cost functional with a data term and a smoothness term. The
+Euler-Lagrange equations give a coupled PDE; the standard solver
+is Jacobi iteration on the Horn-Schunck weighted Laplacian
+(4-neighbours at 1/6, diagonals at 1/12, centre 0).
+
+The headline contrast — same input (a textured patch moving in a
+flat field) given to both:
+
+```
+LK on patch (interior):  u = +0.514   (matches truth, ~3% bias)
+LK in flat region:       u = +0.000   (no texture → no constraint → 0)
+HS on patch (interior):  u = +0.507
+HS in flat region:       u = +0.268   (diffused outward via smoothness)
+```
+
+LK returns zero in the flat region because the 2×2 structure
+tensor there has zero determinant. HS returns a non-zero value
+because the smoothness term makes "zero next to non-zero" expensive;
+the iteration relaxes the field by propagating flow from the
+textured boundary inward. The iteration trace shows it happening:
+after 50 sweeps the flow has just appeared inside the patch; after
+1000 sweeps it's filled in and started to spill outward; after
+5000 sweeps it crosses the entire flat region.
+
+The `α` knob sets the smoothness weight. For images in `[0, 1]`
+(the convention I use everywhere else in the repo), `α ≈ 0.1` is
+about right; smaller `α` matches LK, larger `α` pulls everything to
+zero. The default I shipped is `0.1`.
+
+Concept note: `docs/concepts/20-horn-schunck.md`.
 
 ## House rules
 
@@ -393,8 +510,15 @@ A few things I've decided up front so I don't drift:
   isn't enough.
 - I don't generalize a struct until I have three real callers asking
   for the same shape. Three similar lines beat a premature abstraction.
-- Where I reach for a package, I justify it briefly. Right now the only
-  deps are `LinearAlgebra` and `Random` (both stdlib).
+- Where I reach for a package, I justify it briefly. Current deps:
+  - `LinearAlgebra`, `Random` — stdlib, no-brainer.
+  - `FFTW` — the FFT path in `Convolution`. Performance and the
+    DFT-diagonalization story would be much weaker without it.
+  - `BenchmarkTools` — the performance lab.
+  - `FileIO`, `ImageIO`, `ColorTypes`, `FixedPointNumbers` — real-world
+    image formats in `Photos`. The pure-Julia `PNM` stays as the
+    teaching version.
+  - `ForwardDiff` — differentiable filters in `AutoDiff`.
 
 ## Repo layout
 
@@ -419,7 +543,8 @@ A few things I've decided up front so I don't drift:
 │   ├── io.jl
 │   ├── photos.jl
 │   ├── raytracer.jl
-│   └── autodiff.jl
+│   ├── autodiff.jl
+│   └── flow.jl
 ├── test/
 ├── examples/
 │   ├── 01_first_convolutions.jl
@@ -440,10 +565,59 @@ A few things I've decided up front so I don't drift:
 │   ├── 16_laplacian_blending.jl
 │   ├── 17_convolution_as_linear_algebra.jl
 │   ├── 18_tiny_ray_tracer.jl
-│   └── 19_differentiable_filters.jl
+│   ├── 19_differentiable_filters.jl
+│   ├── 20_optical_flow.jl
+│   ├── 21_pyramidal_optical_flow.jl
+│   └── 22_horn_schunck.jl
 ├── docs/concepts/
 └── artifacts/      # generated PGMs, gitignored except .gitkeep
 ```
+
+## Concept notes
+
+One write-up per major chunk under `docs/concepts/`. They expand on
+the "where I'm at" prose above with the actual derivations,
+measurements, and "things I got wrong the first time" notes.
+
+- `01-convolution.md` — naive 2D correlation, why the kernel is
+  flipped for "real" convolution, how `:zero` / `:replicate` /
+  `:reflect` change behavior at the border.
+- `02-separable-convolution.md` — when a 2D kernel factors into two
+  1D passes (SVD rank-1 test) and the `k/2` speedup with measurements.
+- `03-padding-modes.md` — the six modes side by side.
+- `04-gradient-magnitude-and-direction.md` — Sobel / Prewitt / Scharr
+  / Roberts comparison, how to display direction on grayscale.
+- `05-second-order-edges.md` — Laplacian → LoG → DoG → zero-crossings.
+- `06-canny.md` — the full pipeline stage by stage.
+- `07-noise-and-preprocessing.md` — Gaussian vs salt-and-pepper, why
+  bilateral wins one and fails the other.
+- `08-features.md` — Harris, Hough, connected components, NCC.
+- `09-performance.md` — naive vs inline vs separable vs FFT, the
+  surprising "padding copy isn't the bottleneck" result.
+- `10-pyramids.md` — Burt-Adelson, why reconstruction is exact to ULP.
+- `11-anisotropic-diffusion.md` — Perona-Malik PDE, how K controls the
+  noise-vs-detail tradeoff.
+- `12-real-image-io.md` — FileIO / ImageIO, gotchas around JpegTurbo
+  and N0f8 quantization.
+- `13-multiscale-harris.md` — Harris on every level of a Gaussian
+  pyramid, the geometric-series cost.
+- `14-laplacian-blending.md` — multi-band image blending, transition
+  width scaling.
+- `15-conv-as-linear-algebra.md` — Toeplitz / circulant matrices,
+  DFT diagonalization, eigenvalues are the frequency response.
+- `16-ray-tracing.md` — the Whitted-style ray tracer.
+- `17-differentiable-filters.md` — autodiff on the convolution
+  operators; learning Sobel and friends from input/target pairs.
+- `18-optical-flow.md` — Lucas-Kanade, the optical-flow constraint,
+  why the same 2×2 structure tensor shows up that Harris already
+  used for corners.
+- `19-pyramidal-lucas-kanade.md` — coarse-to-fine LK, bilinear
+  image warping, why a 4-pixel motion needs five levels of pyramid
+  to recover and a sub-pixel motion only needs one.
+- `20-horn-schunck.md` — dense optical flow via Horn-Schunck's
+  1981 variational formulation. Local-vs-global regularization,
+  the Jacobi iteration, why HS gives non-zero flow in textureless
+  regions where LK gives nothing.
 
 ## References
 

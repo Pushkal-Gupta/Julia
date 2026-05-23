@@ -8,7 +8,8 @@ will land here later.
 module Viz
 
 export normalize01, montage, signed_to_gray,
-       draw_line!, mark_points!, label_to_gray
+       draw_line!, mark_points!, label_to_gray,
+       hsv_to_rgb, flow_to_rgb
 
 """
     normalize01(x) -> Matrix{Float64}
@@ -147,6 +148,73 @@ function label_to_gray(labels::AbstractMatrix{Int};
         out[k] = 0.2 + 0.8 * frac
     end
     return out
+end
+
+"""
+    hsv_to_rgb(h, s, v) -> (r, g, b)
+
+Single-pixel HSV → RGB conversion. `h ∈ [0, 1)` is hue (wraps), `s`
+and `v` are saturation and value in `[0, 1]`. The standard piecewise
+formula — I wrote it out instead of pulling in `ColorTypes` so the
+function works on plain `Float64` numbers without going through a
+typed colour space.
+"""
+function hsv_to_rgb(h::Real, s::Real, v::Real)
+    h = mod(Float64(h), 1.0)
+    s = clamp(Float64(s), 0.0, 1.0)
+    v = clamp(Float64(v), 0.0, 1.0)
+    c = v * s
+    x = c * (1 - abs(mod(h * 6, 2) - 1))
+    m = v - c
+    r, g, b = if h < 1/6
+        (c, x, 0.0)
+    elseif h < 2/6
+        (x, c, 0.0)
+    elseif h < 3/6
+        (0.0, c, x)
+    elseif h < 4/6
+        (0.0, x, c)
+    elseif h < 5/6
+        (x, 0.0, c)
+    else
+        (c, 0.0, x)
+    end
+    return (r + m, g + m, b + m)
+end
+
+"""
+    flow_to_rgb(u, v; max_mag = nothing) -> (R, G, B)
+
+Encode a 2D vector field as a colour image using the standard
+optical-flow convention: hue = direction, saturation = magnitude,
+value = 1. Zero flow maps to white; large flow maps to saturated
+colour. If `max_mag` is left as `nothing`, magnitudes are normalized
+to the maximum present in the field; pass an explicit value to keep
+the colour scale stable across frames.
+
+Returns three `Matrix{Float64}` channels in `[0, 1]`, matching the
+shape `Photos.save_rgb_planes` and `PNM.save_ppm` already expect.
+"""
+function flow_to_rgb(u::AbstractMatrix{<:Real}, v::AbstractMatrix{<:Real};
+                     max_mag::Union{Nothing, Real} = nothing)
+    size(u) == size(v) || throw(DimensionMismatch(
+        "u and v have different sizes: $(size(u)) vs $(size(v))"))
+    mag = sqrt.(Float64.(u) .^ 2 .+ Float64.(v) .^ 2)
+    mmax = isnothing(max_mag) ? maximum(mag) : Float64(max_mag)
+    mmax = max(mmax, 1e-12)   # avoid divide-by-zero on an all-zero field
+    R = zeros(Float64, Base.size(u))
+    G = zeros(Float64, Base.size(u))
+    B = zeros(Float64, Base.size(u))
+    @inbounds for k in eachindex(u)
+        # atan2 in (-π, π], shift so hue wraps at 0
+        h = (atan(v[k], u[k]) / (2π)) + 0.5
+        s = clamp(mag[k] / mmax, 0.0, 1.0)
+        r, g, b = hsv_to_rgb(h, s, 1.0)
+        R[k] = r
+        G[k] = g
+        B[k] = b
+    end
+    return (R, G, B)
 end
 
 end # module Viz
