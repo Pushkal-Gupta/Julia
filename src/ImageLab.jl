@@ -23,7 +23,8 @@ Submodules so far:
 - [`Photos`](@ref ImageLab.Photos)      — PNG/JPG/TIFF via FileIO + ImageIO
 - [`RayTracer`](@ref ImageLab.RayTracer) — tiny Whitted-style ray tracer (spheres, planes, point lights, mirror reflection)
 - [`AutoDiff`](@ref ImageLab.AutoDiff)   — differentiable filters via ForwardDiff; learn kernels from input/target pairs
-- [`Flow`](@ref ImageLab.Flow)           — Lucas-Kanade optical flow between two frames (per-pixel `(u, v)` displacement)
+- [`Flow`](@ref ImageLab.Flow)           — Lucas-Kanade and Horn-Schunck optical flow, plus pyramidal variants
+- [`Color`](@ref ImageLab.Color)         — colour-space conversions (RGB ↔ HSV / YCbCr), luminance, Di Zenzo colour gradient
 
 Convention: images are `Matrix{<:Real}` with values in `[0, 1]` for floats or
 `[0, 255]` for `UInt8`. Row index = y (top → bottom), column index = x
@@ -48,6 +49,7 @@ include("photos.jl")
 include("raytracer.jl")
 include("autodiff.jl")
 include("flow.jl")
+include("color.jl")
 
 using .Synth
 using .Kernels
@@ -65,7 +67,8 @@ using .Photos
 using .RayTracer
 using .AutoDiff
 using .Flow
+using .Color
 
-export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos, RayTracer, AutoDiff, Flow
+export Synth, Kernels, Padding, Convolution, Edges, Filters, Features, Pyramids, Metrics, LinAlgView, Viz, PNM, Photos, RayTracer, AutoDiff, Flow, Color
 
 end # module ImageLab

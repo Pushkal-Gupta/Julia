@@ -6,7 +6,7 @@ worth recording mid-build I jot it down here. Nothing is on a schedule.
 
 ## Where I'm at
 
-All the committed chunks are done. 1485 tests passing.
+All the committed chunks are done. 1530 tests passing.
 
 Chunk-by-chunk:
 
@@ -37,11 +37,15 @@ Chunk-by-chunk:
 - Horn-Schunck dense flow (global smoothness prior, Jacobi
   iteration on the HS weighted Laplacian; fills in flow in
   textureless regions where LK has nothing to solve) — done
+- Pyramidal Horn-Schunck (same coarse-to-fine driver wrapped
+  around the HS solver; recovers motions of 6+ pixels) — done
+- Colour image processing (HSV / YCbCr / luminance conversions,
+  per-channel apply, Di Zenzo colour gradient) — done
 
 Open ideas in the "Stretch" section at the bottom of this file:
-pyramidal Horn-Schunck, interactive playground (Pluto / Makie),
-GPU via KernelAbstractions, image registration / homography,
-differentiable Canny.
+interactive playground (Pluto / Makie), GPU via
+KernelAbstractions, image registration / homography,
+differentiable Canny, CIE Lab colour conversion.
 
 ## The convolution engine
 
@@ -534,6 +538,87 @@ The `α` sweep shows the data-vs-smoothness tradeoff cleanly:
 
 Concept note: `docs/concepts/20-horn-schunck.md`.
 
+## Pyramidal Horn-Schunck
+
+What I built:
+
+- `Flow.horn_schunck_pyramid(img1, img2; levels = 4, alpha = 0.1,
+  iters_per_level = 100, pad = :replicate)`. The coarse-to-fine
+  driver from `lucas_kanade_pyramid` wrapped around
+  `horn_schunck` instead of `lucas_kanade`. The only line that
+  changes is the inner solver call.
+
+Big-motion numbers on a (4, -2) translation of a 192×192 sinusoid
+(frequency 0.025 cycles/pixel — picked low enough that the
+Gaussian pyramid's 5-tap filter doesn't alias at coarse levels):
+
+| algorithm    | recovered (u, v)   | error |
+|--------------|-------------------:|------:|
+| plain HS     | (+4.279, -2.246)   | 7%    |
+| pyramid HS   | (+3.997, -1.956)   | 2%    |
+
+The motion sweep: 1 px → 1.02, 2 px → 2.01, 4 px → 4.00, 6 px →
+5.97. Pyramidal HS holds accuracy across the full range, where
+plain HS overshoots progressively worse as motions grow.
+
+The aliasing surprise I documented: at the synthetic 0.04
+cycles/pixel pattern I used for everything else in the flow
+thread, pyramidal HS *diverges* with 4 pyramid levels (recovers
+~20 pixels for a true 2.5-pixel motion). The 5-tap binomial
+pyramid filter doesn't fully anti-alias frequencies near Nyquist,
+and HS's global smoothness propagates the resulting bogus
+gradient values through the levels. LK pyramid hides this because
+its local solve returns ~0 in aliased regions; HS amplifies
+instead. Fix: lower-frequency content or fewer levels for
+synthetic patterns; the default of 4 is fine for natural images.
+
+Concept note: `docs/concepts/21-pyramidal-horn-schunck.md`.
+
+## Colour image processing
+
+What I built:
+
+- `Color` submodule. Six conversion routines plus two
+  channel-aware operators. Everything works on three
+  `Matrix{Float64}` channels indexed `(row, col)`, values in
+  `[0, 1]`.
+- `rgb_to_hsv` / `hsv_to_rgb` — exact at machine precision (round
+  trip error `1.94e-16` on the demo input). Pure algebra, no
+  matrix multiplication.
+- `rgb_to_ycbcr` / `ycbcr_to_rgb` — BT.601 coefficients. The
+  published inverse coefficients are truncated to six decimals so
+  the round trip is exact to ~5e-7, not machine precision; the
+  test accepts `1e-6`.
+- `rgb_to_luminance` — Rec. 709 weights (`0.2126·R + 0.7152·G +
+  0.0722·B`), the right ones for linear `[0, 1]` RGB.
+- `apply_per_channel(f, R, G, B; kwargs...)` — channel-wise glue.
+  Forwards `kwargs` to `f`.
+- `color_gradient_magnitude(R, G, B)` — Di Zenzo's vector-valued
+  gradient. Builds the 2×2 structure tensor of the colour
+  gradient vectors and takes √(largest eigenvalue) per pixel.
+  Reduces to the standard scalar gradient (up to a √3 constant)
+  for greyscale.
+
+Headline result on a synthetic red-→-green strip (a hard colour
+edge where the naive average of per-channel magnitudes would
+partially cancel):
+
+```
+naive average:  max edge response = 0.267
+Di Zenzo:       max edge response = 0.566   (2.12× stronger)
+```
+
+The Di Zenzo formulation registers the full colour-space
+displacement instead of treating the channels as independent.
+
+A cleanup that this chunk forced: `Viz.hsv_to_rgb` (the
+pixel-level helper used internally by `flow_to_rgb`) collided
+with `Color.hsv_to_rgb` (the matrix-level version). Renamed the
+Viz helper to `_hsv_pixel_to_rgb` (internal, not exported).
+`Color.hsv_to_rgb` is now the canonical user-facing version.
+
+Concept note: `docs/concepts/22-color-image-processing.md`.
+
 ## Laplacian-pyramid image blending
 
 What I built:
@@ -614,11 +699,15 @@ Concept note: `docs/concepts/10-pyramids.md`.
 The committed chunks (above) are all in. The list below is what I'd
 pick up next if I keep going on this repo.
 
-- **Pyramidal Horn-Schunck**. The coarse-to-fine driver I wrote
-  for LK is algorithm-agnostic. Wrap it around `horn_schunck`
-  instead of `lucas_kanade` and HS gets the same big-motion fix.
-  Small chunk, would make a nice bookend to the optical-flow
-  thread.
+- **CIE Lab colour conversion**. Perceptually-uniform colour space,
+  the gold standard for "what looks like the same colour
+  difference to a human?". Goes through XYZ with a gamma-style
+  nonlinearity. Skipped from the `Color` chunk to keep that
+  focused; the trip RGB → linear → XYZ → Lab and back is a clean
+  small follow-up.
+- **Combined LK + HS flow** (Bruhn et al., 2005) — one algorithm
+  that's LK in textured regions and HS in flat ones. Natural
+  capstone to the four flow algorithms already shipped.
 - **Differentiable Canny**. Now that `AutoDiff` works, I could
   replace the discrete steps in Canny (NMS, double threshold,
   hysteresis) with smooth approximations — softmax-weighted NMS,

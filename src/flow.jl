@@ -57,7 +57,7 @@ using ..Convolution: correlate2d, separable_correlate2d
 using ..Pyramids: gaussian_pyramid
 
 export FlowField, lucas_kanade, lucas_kanade_pyramid,
-       horn_schunck,
+       horn_schunck, horn_schunck_pyramid,
        warp_bilinear, flow_magnitude, flow_angle
 
 """
@@ -413,6 +413,75 @@ function horn_schunck(img1::AbstractMatrix{<:Real},
     # OFC residual per pixel — small where the flow agrees with the data.
     residual = (Ix .* u .+ Iy .* v .+ It) .^ 2
     return FlowField(u, v, residual)
+end
+
+"""
+    horn_schunck_pyramid(img1, img2;
+                         levels = 4, alpha = 0.1,
+                         iters_per_level = 100, pad = :replicate)
+        -> FlowField
+
+The coarse-to-fine driver from `lucas_kanade_pyramid`, wrapped around
+`horn_schunck` instead of `lucas_kanade`. The driver itself is
+algorithm-agnostic — for each pyramid level it warps frame 2 by the
+current estimate and asks the inner flow algorithm to solve for the
+*residual*, then accumulates. The only thing that changes from the
+LK pyramid is the inner solver and the cost per level.
+
+This buys HS the same big-motion robustness pyramidal LK has, at the
+same multiplicative cost (≈ `(levels + 1) × iters_per_level` Jacobi
+sweeps total). It also lets HS run with fewer iterations *per* level
+than the single-shot version needs — the residual at each level is
+small, so the Jacobi sweep converges faster.
+
+`iters_per_level` defaults to 100 here, less than `horn_schunck`'s
+default of 200, because each level only has to handle the residual
+motion not the full motion.
+"""
+function horn_schunck_pyramid(img1::AbstractMatrix{<:Real},
+                              img2::AbstractMatrix{<:Real};
+                              levels::Integer = 4,
+                              alpha::Real = 0.1,
+                              iters_per_level::Integer = 100,
+                              pad::Symbol = :replicate)
+    size(img1) == size(img2) || throw(DimensionMismatch(
+        "frames must be the same size; got $(size(img1)) and $(size(img2))"))
+    levels ≥ 0           || throw(ArgumentError("levels must be non-negative"))
+    iters_per_level ≥ 1  || throw(ArgumentError("iters_per_level must be ≥ 1"))
+    alpha > 0            || throw(ArgumentError("alpha must be positive"))
+
+    F1 = Float64.(img1)
+    F2 = Float64.(img2)
+
+    pyr1 = gaussian_pyramid(F1; levels = levels)
+    pyr2 = gaussian_pyramid(F2; levels = levels)
+    L = length(pyr1)
+
+    coarse_H, coarse_W = size(pyr1[L])
+    u = zeros(Float64, coarse_H, coarse_W)
+    v = zeros(Float64, coarse_H, coarse_W)
+    conf = zeros(Float64, coarse_H, coarse_W)
+
+    for k in L:-1:1
+        I1 = pyr1[k]
+        I2 = pyr2[k]
+        warped = warp_bilinear(I2, u, v)
+        residual = horn_schunck(I1, warped;
+                                alpha = alpha,
+                                iterations = iters_per_level,
+                                pad = pad)
+        u .+= residual.u
+        v .+= residual.v
+        conf = residual.confidence
+        if k > 1
+            next_H, next_W = size(pyr1[k - 1])
+            u = 2 .* _upsample_field(u, next_H, next_W)
+            v = 2 .* _upsample_field(v, next_H, next_W)
+            conf = _upsample_field(conf, next_H, next_W)
+        end
+    end
+
+    return FlowField(u, v, conf)
 end
 
 end # module Flow

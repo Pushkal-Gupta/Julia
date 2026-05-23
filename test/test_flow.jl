@@ -1,7 +1,8 @@
 using Test
 using ImageLab
 using ImageLab.Flow
-using ImageLab.Viz: flow_to_rgb, hsv_to_rgb
+using ImageLab.Viz: flow_to_rgb
+using ImageLab.Color: hsv_to_rgb
 
 # Sample a continuous sinusoid pattern at two offsets — gives a true
 # subpixel motion without any bilinear-resampling artifacts.
@@ -209,17 +210,77 @@ end
                                                 iterations = 0)
     end
 
-    @testset "hsv_to_rgb sanity" begin
+    # Lower-frequency pattern for the HS-pyramid tests so the Gaussian
+    # pyramid stays inside the Nyquist limit at every level.
+    function low_freq_sinusoid(H, W; shift_u = 0.0, shift_v = 0.0)
+        img = zeros(H, W)
+        for j in 1:W, i in 1:H
+            img[i, j] = 0.5 + 0.4 *
+                        sin(2π * 0.025 * (j - shift_u)) *
+                        cos(2π * 0.025 * (i - shift_v))
+        end
+        return img
+    end
+
+    @testset "Pyramidal HS recovers big motions plain HS misses" begin
+        H, W = 192, 192
+        img1 = low_freq_sinusoid(H, W)
+        img2 = low_freq_sinusoid(H, W; shift_u = 4.0, shift_v = -2.0)
+        hs    = horn_schunck(img1, img2; alpha = 0.1, iterations = 300)
+        hsp   = horn_schunck_pyramid(img1, img2;
+                                     levels = 3, alpha = 0.1,
+                                     iters_per_level = 150)
+        inner = (60:H-60, 60:W-60)
+        plain_err =
+            abs(sum(hs.u[inner...])  / length(hs.u[inner...]) - 4.0) +
+            abs(sum(hs.v[inner...])  / length(hs.v[inner...]) - (-2.0))
+        pyr_err =
+            abs(sum(hsp.u[inner...]) / length(hsp.u[inner...]) - 4.0) +
+            abs(sum(hsp.v[inner...]) / length(hsp.v[inner...]) - (-2.0))
+        # Pyramid version should be at least 2× more accurate on this
+        # big-motion case where plain HS suffers from OFC linearization.
+        @test pyr_err < plain_err / 2
+        # And it should be close to truth, not just better than plain HS.
+        @test pyr_err < 0.5
+    end
+
+    @testset "Pyramidal HS on identical frames is zero" begin
+        img = low_freq_sinusoid(64, 64)
+        f = horn_schunck_pyramid(img, img; levels = 2)
+        @test maximum(abs, f.u) < 1e-10
+        @test maximum(abs, f.v) < 1e-10
+    end
+
+    @testset "Pyramidal HS validates arguments" begin
+        @test_throws DimensionMismatch horn_schunck_pyramid(zeros(16, 16), zeros(16, 17))
+        @test_throws ArgumentError horn_schunck_pyramid(zeros(16, 16), zeros(16, 16);
+                                                         levels = -1)
+        @test_throws ArgumentError horn_schunck_pyramid(zeros(16, 16), zeros(16, 16);
+                                                         iters_per_level = 0)
+        @test_throws ArgumentError horn_schunck_pyramid(zeros(16, 16), zeros(16, 16);
+                                                         alpha = 0.0)
+    end
+
+    @testset "hsv_to_rgb sanity (matrix version)" begin
+        # Wrap each test pixel in a 1×1 matrix to call the matrix API.
+        oneone(x) = fill(x, 1, 1)
         # Red, green, blue at saturation 1, value 1
-        @test all(hsv_to_rgb(0.0, 1.0, 1.0)    .≈ (1.0, 0.0, 0.0))
-        @test all(hsv_to_rgb(1/3,  1.0, 1.0)  .≈ (0.0, 1.0, 0.0))
-        @test all(hsv_to_rgb(2/3,  1.0, 1.0)  .≈ (0.0, 0.0, 1.0))
+        R, G, B = hsv_to_rgb(oneone(0.0), oneone(1.0), oneone(1.0))
+        @test R[1, 1] ≈ 1.0 && G[1, 1] ≈ 0.0 && B[1, 1] ≈ 0.0
+        R, G, B = hsv_to_rgb(oneone(1/3), oneone(1.0), oneone(1.0))
+        @test R[1, 1] ≈ 0.0 && G[1, 1] ≈ 1.0 && B[1, 1] ≈ 0.0
+        R, G, B = hsv_to_rgb(oneone(2/3), oneone(1.0), oneone(1.0))
+        @test R[1, 1] ≈ 0.0 && G[1, 1] ≈ 0.0 && B[1, 1] ≈ 1.0
         # Zero saturation → grayscale
-        r, g, b = hsv_to_rgb(0.5, 0.0, 0.7)
-        @test r ≈ g ≈ b ≈ 0.7
+        R, G, B = hsv_to_rgb(oneone(0.5), oneone(0.0), oneone(0.7))
+        @test R[1, 1] ≈ 0.7 && G[1, 1] ≈ 0.7 && B[1, 1] ≈ 0.7
         # Hue wraps modulo 1
-        @test all(hsv_to_rgb(0.0, 1.0, 1.0) .≈ hsv_to_rgb(1.0, 1.0, 1.0))
-        @test all(hsv_to_rgb(0.0, 1.0, 1.0) .≈ hsv_to_rgb(-1.0, 1.0, 1.0))
+        R1, G1, B1 = hsv_to_rgb(oneone(0.0),  oneone(1.0), oneone(1.0))
+        R2, G2, B2 = hsv_to_rgb(oneone(1.0),  oneone(1.0), oneone(1.0))
+        R3, G3, B3 = hsv_to_rgb(oneone(-1.0), oneone(1.0), oneone(1.0))
+        @test R1[1, 1] ≈ R2[1, 1] ≈ R3[1, 1]
+        @test G1[1, 1] ≈ G2[1, 1] ≈ G3[1, 1]
+        @test B1[1, 1] ≈ B2[1, 1] ≈ B3[1, 1]
     end
 
     @testset "flow_to_rgb basics" begin

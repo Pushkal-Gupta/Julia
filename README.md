@@ -10,8 +10,10 @@ anisotropic diffusion → real-image I/O → multi-scale Harris →
 multi-band image blending → convolution as Toeplitz / circulant matrices
 → a tiny Whitted-style ray tracer → differentiable filters via
 ForwardDiff → Lucas-Kanade optical flow → pyramidal LK for big
-motions → Horn-Schunck dense flow. See `ROADMAP.md` for the
-chunk-by-chunk breakdown and `docs/concepts/` for the writeups.
+motions → Horn-Schunck dense flow → pyramidal Horn-Schunck →
+colour image processing (HSV / YCbCr / luminance / Di Zenzo
+gradient). See `ROADMAP.md` for the chunk-by-chunk breakdown and
+`docs/concepts/` for the writeups.
 
 The rule I keep coming back to: write the naive version, prove it works
 with tests, look at the output as an actual image, *then* think about
@@ -88,12 +90,21 @@ A small package at `src/ImageLab.jl` with these submodules:
   and warping at each level. `horn_schunck` is the dense
   global-smoothness alternative — Jacobi iteration on the
   Horn-Schunck weighted Laplacian, fills in flow in textureless
-  regions by diffusion. `warp_bilinear` does inverse-warping with
-  edge-clamped four-tap bilinear interpolation. Visualization via
+  regions by diffusion. `horn_schunck_pyramid` wraps the same
+  coarse-to-fine driver around the HS solver for big-motion
+  recovery. `warp_bilinear` does inverse-warping with edge-clamped
+  four-tap bilinear interpolation. Visualization via
   `Viz.flow_to_rgb` using the standard hue-direction /
   saturation-magnitude colour-wheel convention.
+- `Color` — Colour image processing. `rgb_to_hsv`/`hsv_to_rgb` and
+  `rgb_to_ycbcr`/`ycbcr_to_rgb` colour-space conversions,
+  `rgb_to_luminance` for Rec. 709 grayscale collapse,
+  `apply_per_channel(f, R, G, B)` for channel-wise filters, and
+  `color_gradient_magnitude(R, G, B)` for Di Zenzo's structure-tensor
+  colour gradient — the right way to detect colour edges, distinct
+  from averaging the per-channel gradient magnitudes.
 
-Tests live in `test/` and currently pass 1485. Run them with
+Tests live in `test/` and currently pass 1530. Run them with
 `julia --project=. test/runtests.jl`.
 
 ## Quickstart
@@ -128,6 +139,8 @@ julia --project=. examples/19_differentiable_filters.jl
 julia --project=. examples/20_optical_flow.jl
 julia --project=. examples/21_pyramidal_optical_flow.jl
 julia --project=. examples/22_horn_schunck.jl
+julia --project=. examples/23_pyramidal_horn_schunck.jl
+julia --project=. examples/24_color_processing.jl
 open artifacts/
 ```
 
@@ -496,6 +509,49 @@ zero. The default I shipped is `0.1`.
 
 Concept note: `docs/concepts/20-horn-schunck.md`.
 
+After plain HS, the next thing to land was a pyramidal variant —
+same coarse-to-fine driver I already had for LK, wrapped around
+the HS solver instead. The diff between `lucas_kanade_pyramid`
+and `horn_schunck_pyramid` is essentially one line (the inner
+solver). On a 4-pixel translation plain HS overshoots by ~7%;
+pyramidal HS recovers it to 2%, and the 6-pixel case lands within
+0.5%. One surprise I documented in the concept note: pyramidal HS
+diverges on high-frequency synthetic content (0.04 cycles/pixel +
+4 pyramid levels = aliasing past the 5-tap filter's safe band).
+The LK pyramid has the same vulnerability in principle but its
+local-solve nature masks the symptom; HS amplifies it through the
+upsampling. The fix is fewer pyramid levels for very synthetic
+content, or natural images that don't concentrate energy at high
+spatial frequencies.
+
+Concept note: `docs/concepts/21-pyramidal-horn-schunck.md`.
+
+Then I closed the long-standing grayscale-only gap by writing
+`Color`. The submodule covers the colour bits the rest of the
+repo would have needed eventually: `rgb_to_hsv` / `hsv_to_rgb` for
+the cylindrical model, `rgb_to_ycbcr` / `ycbcr_to_rgb` for the
+linear luminance-chrominance split that JPEG uses,
+`rgb_to_luminance` for Rec. 709 grayscale collapse,
+`apply_per_channel(f, R, G, B)` for the obvious channel-wise
+extension of any grayscale filter, and
+`color_gradient_magnitude(R, G, B)` for Di Zenzo's vector-valued
+gradient — the *right* way to detect colour edges, which is not
+the same as averaging the three per-channel gradient magnitudes.
+
+The Di Zenzo demo is the satisfying one. I built a synthetic input
+with a region where red drops sharply as green rises sharply — a
+strong colour edge, but one where the per-channel magnitudes
+partly cancel when you average them. The numbers:
+
+```
+red→green strip max:  naive average = 0.267   Di Zenzo = 0.566   (ratio 2.12×)
+```
+
+— Di Zenzo's response is over twice as strong because it sees the
+colour as moving across a long path in RGB space, not as two
+unrelated channel changes that happen to be at the same pixel.
+Concept note: `docs/concepts/22-color-image-processing.md`.
+
 ## House rules
 
 A few things I've decided up front so I don't drift:
@@ -544,7 +600,8 @@ A few things I've decided up front so I don't drift:
 │   ├── photos.jl
 │   ├── raytracer.jl
 │   ├── autodiff.jl
-│   └── flow.jl
+│   ├── flow.jl
+│   └── color.jl
 ├── test/
 ├── examples/
 │   ├── 01_first_convolutions.jl
@@ -568,7 +625,9 @@ A few things I've decided up front so I don't drift:
 │   ├── 19_differentiable_filters.jl
 │   ├── 20_optical_flow.jl
 │   ├── 21_pyramidal_optical_flow.jl
-│   └── 22_horn_schunck.jl
+│   ├── 22_horn_schunck.jl
+│   ├── 23_pyramidal_horn_schunck.jl
+│   └── 24_color_processing.jl
 ├── docs/concepts/
 └── artifacts/      # generated PGMs, gitignored except .gitkeep
 ```
@@ -618,6 +677,12 @@ measurements, and "things I got wrong the first time" notes.
   1981 variational formulation. Local-vs-global regularization,
   the Jacobi iteration, why HS gives non-zero flow in textureless
   regions where LK gives nothing.
+- `21-pyramidal-horn-schunck.md` — the same coarse-to-fine driver
+  applied to HS, plus the high-frequency-aliasing surprise where
+  HS pyramid diverges on inputs LK pyramid handles fine.
+- `22-color-image-processing.md` — RGB ↔ HSV ↔ YCbCr conversions,
+  Rec. 709 luminance, the Di Zenzo colour gradient and why it
+  beats averaging per-channel magnitudes.
 
 ## References
 

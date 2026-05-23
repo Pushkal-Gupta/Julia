@@ -9,7 +9,10 @@ module Viz
 
 export normalize01, montage, signed_to_gray,
        draw_line!, mark_points!, label_to_gray,
-       hsv_to_rgb, flow_to_rgb
+       flow_to_rgb
+# The single-pixel HSV → RGB helper used by `flow_to_rgb` is renamed
+# `_hsv_pixel_to_rgb` and not exported. The matrix-level version that
+# users want is `Color.hsv_to_rgb`.
 
 """
     normalize01(x) -> Matrix{Float64}
@@ -151,15 +154,16 @@ function label_to_gray(labels::AbstractMatrix{Int};
 end
 
 """
-    hsv_to_rgb(h, s, v) -> (r, g, b)
+    _hsv_pixel_to_rgb(h, s, v) -> (r, g, b)
 
 Single-pixel HSV → RGB conversion. `h ∈ [0, 1)` is hue (wraps), `s`
 and `v` are saturation and value in `[0, 1]`. The standard piecewise
 formula — I wrote it out instead of pulling in `ColorTypes` so the
 function works on plain `Float64` numbers without going through a
-typed colour space.
+typed colour space. Not exported; the matrix-level version lives in
+`Color.hsv_to_rgb`.
 """
-function hsv_to_rgb(h::Real, s::Real, v::Real)
+function _hsv_pixel_to_rgb(h::Real, s::Real, v::Real)
     h = mod(Float64(h), 1.0)
     s = clamp(Float64(s), 0.0, 1.0)
     v = clamp(Float64(v), 0.0, 1.0)
@@ -209,7 +213,7 @@ function flow_to_rgb(u::AbstractMatrix{<:Real}, v::AbstractMatrix{<:Real};
         # atan2 in (-π, π], shift so hue wraps at 0
         h = (atan(v[k], u[k]) / (2π)) + 0.5
         s = clamp(mag[k] / mmax, 0.0, 1.0)
-        r, g, b = hsv_to_rgb(h, s, 1.0)
+        r, g, b = _hsv_pixel_to_rgb(h, s, 1.0)
         R[k] = r
         G[k] = g
         B[k] = b
